@@ -1,0 +1,12 @@
+{
+  "name": "yetanothertown",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node tools/build.mjs check",
+    "test": "node tools/build.mjs test",
+    "build": "node tools/build.mjs build"
+  },
+  "engines": { "node": ">=24" }
+}

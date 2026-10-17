@@ -1,0 +1,12 @@
+{
+  "name": "yetanothertown-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "check": "node --check src/service.mjs && node --check src/server.mjs && node --check test/service.test.mjs",
+    "test": "node --test"
+  }
+}

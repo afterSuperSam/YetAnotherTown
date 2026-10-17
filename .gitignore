@@ -1,0 +1,12 @@
+.gradle/
+.cache/
+build/
+compat/cache/
+tools/cache/
+server/data/
+server/config.local.json
+server/config.json
+*.log
+.idea/
+.vscode/
+run/
