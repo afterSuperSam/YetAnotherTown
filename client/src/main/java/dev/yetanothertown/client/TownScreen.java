@@ -23,9 +23,9 @@ public final class TownScreen extends Screen {
     static final int TEXT = TownStyle.TEXT;
     static final int MUTED = TownStyle.MUTED;
     static final int ACCENT = TownStyle.ACCENT;
-    private static final String[] PLATFORM = {"工程地图", "工程任务", "材料认捐", "空间留言", "公共设施", "维修工单"};
+    private static final String[] PLATFORM = {"工程", "留言"};
     private static final String[] MANAGEMENT = {"成员审核", "权限组", "世界与周目", "小镇设置"};
-    private static final String[] COLLECTIONS = {"projects", "tasks", "materials", "messages", "facilities", "tickets"};
+    private static final String[] COLLECTIONS = {"projects", "messages"};
     private final TownGateway gateway = TownGateway.get();
     private final Screen parent;
     private final long openedAt = System.nanoTime();
@@ -52,7 +52,7 @@ public final class TownScreen extends Screen {
     private boolean homeContent;
     private record Panel(int x, int y, int width, int height, boolean accented) { }
     private record Line(String text, int x, int y, int color) { }
-    private record Card(int x, int y, int width, String title, String subtitle, String state) { }
+    private record Card(int x, int y, int width, String title, String subtitle, String state, boolean repair) { }
 
     public TownScreen() { this(null); }
     public TownScreen(Screen parent) { super(Component.literal("YetAnotherTown · 小镇协作")); this.parent = parent; }
@@ -91,14 +91,14 @@ public final class TownScreen extends Screen {
         else {
             String[] sections = tab == 1 ? PLATFORM : MANAGEMENT;
             int sectionWidth = contentWidth / sections.length;
-            if (contentWidth < 420) {
+            if (contentWidth < 420 && tab != 1) {
                 button("‹", contentLeft, contentTop, 22, () -> { section = (section + sections.length - 1) % sections.length; page = 0; rebuild(); });
                 String sectionTitle = sections[section] + "  " + (section + 1) + "/" + sections.length;
                 label(sectionTitle, contentLeft + (contentWidth - font.width(sectionTitle)) / 2, contentTop + 6, ACCENT);
                 button("›", contentLeft + contentWidth - 22, contentTop, 22, () -> { section = (section + 1) % sections.length; page = 0; rebuild(); });
             } else for (int index = 0; index < sections.length; index++) {
                 final int selected = index;
-                addRenderableWidget(TownStyle.button(sections[index], contentLeft + index * sectionWidth, contentTop, sectionWidth - 4,
+                addRenderableWidget(TownStyle.tab(sections[index], contentLeft + index * sectionWidth, contentTop, sectionWidth - 4,
                         () -> { section = selected; page = 0; rebuild(); }, section == index));
             }
             contentTop += 26;
@@ -163,7 +163,7 @@ public final class TownScreen extends Screen {
         label("小镇事务", x + 2, linksY, ACCENT);
         int openTickets = 0;
         for (JsonElement element : array("tickets")) if (!stringValue(element.getAsJsonObject(), "status").equals("resolved")) openTickets++;
-        String overview = gateway.townId.isEmpty() ? "让每一份建设，都有伙伴同行。" : array("projects").size() + " 工程 · " + array("tasks").size() + " 任务 · " + openTickets + " 待修";
+        String overview = gateway.townId.isEmpty() ? "让每一份建设，都有伙伴同行。" : array("projects").size() + " 工程 · " + array("messages").size() + " 留言 · " + openTickets + " 待修";
         label(font.plainSubstrByWidth(overview, mainWidth - 4), x + 2, linksY + 16, MUTED);
         int linkWidth = (mainWidth - 8) / 3;
         Button create = button("注册小镇", x, linksY + 34, linkWidth, this::createTown);
@@ -175,26 +175,14 @@ public final class TownScreen extends Screen {
     }
 
     private void platform() {
-        String collection = COLLECTIONS[section];
+        int actionWidth = Math.min(132, (contentWidth - 8) / 2);
         int y = contentTop;
-        if (section <= 2) {
-            button("工程：" + (projectId.isEmpty() ? "全部" : projectName(projectId)), contentLeft, y, contentWidth - (section == 0 ? 138 : 68), this::chooseProject);
-        } else if (section == 5 && has("ticket.create") && !archived()) {
-            button("堵塞", contentLeft, y, 50, () -> quickTicket("机器堵塞"));
-            button("照明", contentLeft + 54, y, 50, () -> quickTicket("照明缺失"));
-            button("断线", contentLeft + 108, y, 50, () -> quickTicket("线路断裂"));
-        } else label("世界：" + worldName(gateway.worldId), contentLeft + 4, y + 6, MUTED);
-        if (section == 0) button("地图", contentLeft + contentWidth - 132, y, 60, () -> VersionClient.show(new TownMapScreen(this)));
-        String permission = new String[]{"project.create", "task.manage", "material.manage", "message.create", "facility.manage", "ticket.create"}[section];
-        Button create = button("＋ 新建", contentLeft + contentWidth - 62, y, 62, this::createRecord);
-        create.active = has(permission) && !archived();
-        List<JsonObject> records = new ArrayList<>();
-        for (JsonElement element : array(collection)) {
-            JsonObject record = element.getAsJsonObject();
-            if (!projectId.isEmpty() && section <= 2 && !stringValue(record, section == 0 ? "id" : "projectId").equals(projectId)) continue;
-            records.add(record);
-        }
-        list(records, y + 26, record -> showRecord(collection, record));
+        if (section == 0) button("打开工程地图", contentLeft, y, actionWidth, () -> VersionClient.show(new TownMapScreen(this)));
+        else label("世界：" + worldName(gateway.worldId), contentLeft + 2, y + 6, MUTED);
+        Button create = button(section == 0 ? "登记工程" : "留下留言", contentLeft + contentWidth - actionWidth, y, actionWidth, this::createRecord);
+        create.active = has(section == 0 ? "project.create" : "message.create") && !archived();
+        String collection = COLLECTIONS[section];
+        list(objects(array(collection)), y + 26, record -> showRecord(collection, record));
     }
 
     private void management() {
@@ -239,8 +227,13 @@ public final class TownScreen extends Screen {
             String title = stringValue(record, "name", stringValue(record, "title", stringValue(record, "text", "记录")));
             String subtitle = subtitle(record);
             String status = state(stringValue(record, "status", bool(record, "archived") ? "archived" : ""));
-            cards.add(new Card(contentLeft, y, contentWidth, title, subtitle, status));
-            button("查看", contentLeft + contentWidth - 55, y + 12, 48, () -> details.accept(record));
+            boolean repair = tab == 1 && section == 0 && List.of("completed", "maintenance").contains(stringValue(record, "status"));
+            cards.add(new Card(contentLeft, y, contentWidth, title, subtitle, status, repair));
+            if (repair) {
+                Button report = button("报修", contentLeft + contentWidth - 55, y + 12, 48, () -> ticketForm(record));
+                report.active = has("ticket.create") && !archived();
+            }
+            button("详情", contentLeft + contentWidth - (repair ? 109 : 55), y + 12, 48, () -> details.accept(record));
         }
         int footer = contentBottom - 20;
         if (pages > 1) {
@@ -255,148 +248,89 @@ public final class TownScreen extends Screen {
 
     private void createRecord() {
         if (section == 0) VersionClient.show(new TownMapScreen(this, chunks -> projectForm(new JsonObject(), chunks)));
-        if (section == 1) taskForm();
-        if (section == 2) materialForm();
-        if (section == 3) messageForm();
-        if (section == 4) facilityForm(new JsonObject());
-        if (section == 5) ticketForm();
+        else messageForm();
     }
 
     private void showRecord(String collection, JsonObject record) {
-        List<String> description = describe(collection, record);
+        List<String> description = describe(record);
         List<TownForm.Action> actions = new ArrayList<>();
         String id = stringValue(record, "id");
         boolean writable = !archived();
         if (collection.equals("projects")) {
-            if (canManageProject(record, "project.edit") && writable && !stringValue(record, "status").equals("completed")) actions.add(action("修改工程资料 / 项目组", () -> projectForm(record, objectValue(record, "chunks"))));
-            if (canManageProject(record, "project.edit") && canConfirm(record) && writable && stringValue(record, "status").equals("active")) actions.add(action("提交工程验收", () -> perform("project.submit", object("id", id))));
-            if (has("project.approve") && writable) {
-                if (stringValue(record, "status").equals("pending")) {
-                    actions.add(action("批准施工预约", () -> review(id, "approve")));
-                    actions.add(action("驳回预约并填写理由", () -> review(id, "reject")));
-                }
-                if (stringValue(record, "status").equals("review")) {
-                    actions.add(action("通过验收", () -> review(id, "accept")));
-                    actions.add(action("退回验收并填写说明", () -> review(id, "reject")));
-                }
+            if (canManageProject(record, "project.edit") && writable) {
+                actions.add(action("编辑工程", () -> projectForm(record, objectValue(record, "chunks"))));
+                if (stringValue(record, "status").equals("planned")) actions.add(action("开始施工", () -> perform("project.status", object("id", id, "status", "active"))));
+                if (stringValue(record, "status").equals("active")) actions.add(action("标记完工", () -> confirm("工程完工", "确认工程已建成，后续可随时报修。", () -> perform("project.status", object("id", id, "status", "completed")))));
             }
-            actions.add(action("查看该工程的任务与材料", () -> { projectId = id; section = 1; page = 0; VersionClient.show(this); }));
-            actions.add(action("在地图中查看工程", () -> { projectId = id; VersionClient.show(new TownMapScreen(this)); }));
-        } else if (collection.equals("tasks") && writable) {
-            String status = stringValue(record, "status");
-            JsonObject project = project(stringValue(record, "projectId"));
-            if (stringValue(project, "status").equals("active")) {
-                if (status.equals("open") && has("task.claim")) actions.add(action("领取这项任务", () -> perform("task.claim", object("id", id))));
-                if (status.equals("claimed") && has("task.claim") && stringValue(record, "assigneeId").equals(playerId())) actions.add(action("提交任务完成", () -> perform("task.submit", object("id", id))));
-                if (status.equals("review") && canManageProject(project, "task.manage") && canConfirm(project)) actions.add(action("确认任务已完成", () -> perform("task.confirm", object("id", id))));
-                if (List.of("claimed", "review").contains(status) && (has("task.claim") && stringValue(record, "assigneeId").equals(playerId()) || canManageProject(project, "task.manage") && canConfirm(project))) actions.add(action("释放任务，重新开放领取", () -> perform("task.release", object("id", id))));
+            if (writable && has("ticket.create") && List.of("completed", "maintenance").contains(stringValue(record, "status"))) actions.add(action("提交维护工单", () -> ticketForm(record)));
+            for (JsonElement element : array("tickets")) {
+                JsonObject ticket = element.getAsJsonObject();
+                if (stringValue(ticket, "projectId").equals(id)) actions.add(action(stringValue(ticket, "title") + " · " + state(stringValue(ticket, "status")), () -> showRecord("tickets", ticket)));
             }
-        } else if (collection.equals("materials")) {
-            JsonObject project = project(stringValue(record, "projectId"));
-            if (has("material.pledge") && writable && stringValue(project, "status").equals("active")) actions.add(action("认捐材料", () -> form("认捐 " + stringValue(record, "name"), List.of(number("quantity", "认捐数量", 1)), data -> { data.addProperty("materialId", id); perform("material.pledge", data); })));
-            for (JsonElement element : array("pledges")) {
-                JsonObject pledge = element.getAsJsonObject();
-                if (!stringValue(pledge, "materialId").equals(id)) continue;
-                String pledgeId = stringValue(pledge, "id");
-                description.add(memberName(stringValue(pledge, "playerId", stringValue(pledge, "createdBy"))) + " · " + stringValue(pledge, "quantity") + " · " + state(stringValue(pledge, "status")));
-                if (writable && stringValue(project, "status").equals("active")) {
-                    if (stringValue(pledge, "status").equals("pledged") && has("material.pledge") && stringValue(pledge, "playerId").equals(playerId())) actions.add(action("我已交付 " + stringValue(pledge, "quantity") + " 份", () -> perform("pledge.submit", object("id", pledgeId))));
-                    if (stringValue(pledge, "status").equals("submitted") && canManageProject(project, "material.manage") && canConfirm(project)) actions.add(action("确认 " + memberName(stringValue(pledge, "playerId")) + " 的交付", () -> perform("pledge.confirm", object("id", pledgeId))));
-                    if (!stringValue(pledge, "status").equals("confirmed") && (has("material.pledge") && stringValue(pledge, "playerId").equals(playerId()) || canManageProject(project, "material.manage") && canConfirm(project))) actions.add(action("取消 " + memberName(stringValue(pledge, "playerId")) + " 的未确认认捐", () -> perform("pledge.cancel", object("id", pledgeId))));
-                }
-            }
+            actions.add(action("查看地图", () -> VersionClient.show(new TownMapScreen(this))));
         } else if (collection.equals("messages") && has("message.create") && writable) {
-            if (stringValue(record, "createdBy").equals(playerId()) || has("project.approve")) actions.add(action("删除这条留言", () -> confirm("删除留言", "删除后无法恢复。", () -> perform("message.delete", object("id", id)))));
-        } else if (collection.equals("facilities") && has("facility.manage") && writable) {
-            actions.add(action("编辑设施说明", () -> facilityForm(record)));
-        } else if (collection.equals("tickets") && has("ticket.manage") && writable) {
-            actions.add(action("标为处理中", () -> perform("ticket.update", object("id", id, "status", "working"))));
-            actions.add(action("填写处理结果并解决", () -> form("解决维修工单", List.of(text("resolution", "处理结果", stringValue(record, "resolution"))), data -> { data.addProperty("id", id); data.addProperty("status", "resolved"); perform("ticket.update", data); })));
+            if (stringValue(record, "createdBy").equals(playerId()) || has("project.approve")) actions.add(action("删除留言", () -> confirm("删除留言", "删除后无法恢复。", () -> perform("message.delete", object("id", id)))));
+        } else if (collection.equals("tickets") && writable && (has("ticket.manage") || canManageProject(project(stringValue(record, "projectId")), "project.edit"))) {
+            if (stringValue(record, "status").equals("open")) actions.add(action("开始维护", () -> perform("ticket.update", object("id", id, "status", "working"))));
+            if (!stringValue(record, "status").equals("resolved")) actions.add(action("完成维护", () -> form("维护结果", List.of(text("resolution", "处理说明", "")), data -> { data.addProperty("id", id); data.addProperty("status", "resolved"); perform("ticket.update", data); })));
         }
-        if (record.has("dimension") && !archived()) actions.add(action("设为导航目标", () -> VersionClient.navigate(record)));
-        VersionClient.show(new TownForm(this, stringValue(record, "name", stringValue(record, "title", "记录详情")), List.of(), description, actions, null));
+        if (record.has("dimension") && !archived()) actions.add(action("导航到这里", () -> VersionClient.navigate(record)));
+        VersionClient.show(new TownForm(this, stringValue(record, "name", stringValue(record, "title", "留言详情")), List.of(), description, actions, null));
     }
 
-    private List<String> describe(String collection, JsonObject record) {
+    private List<String> describe(JsonObject record) {
         List<String> result = new ArrayList<>();
-        if (record.has("status")) result.add("状态：" + state(stringValue(record, "status")));
-        String[][] labels = {{"purpose", "建筑用途"}, {"type", "类型"}, {"description", "说明"}, {"text", "留言"}, {"notes", "备注"}, {"expectedAt", "预计完工"}, {"instructions", "操作方式"}, {"rules", "使用规则"}, {"resolution", "处理结果"}, {"reviewReason", "审批说明"}};
+        if (record.has("status") && !stringValue(record, "status").equals("completed")) result.add("状态：" + state(stringValue(record, "status")));
+        String[][] labels = {{"purpose", "用途"}, {"description", "说明"}, {"text", "留言"}, {"notes", "备注"}, {"resolution", "处理结果"}};
         for (String[] label : labels) if (!stringValue(record, label[0]).isBlank()) result.add(label[1] + "：" + stringValue(record, label[0]));
         if (record.has("leaderId")) result.add("负责人：" + memberName(stringValue(record, "leaderId")));
-        if (record.has("maintainerId")) result.add("维护人：" + memberName(stringValue(record, "maintainerId")));
-        if (record.has("assigneeId")) result.add("领取人：" + memberName(stringValue(record, "assigneeId")));
-        if (record.has("projectId")) result.add("所属工程：" + projectName(stringValue(record, "projectId")));
+        if (record.has("projectId") && !stringValue(record, "projectId").isBlank()) result.add("工程：" + projectName(stringValue(record, "projectId")));
         if (record.has("chunks")) { JsonObject chunks = objectValue(record, "chunks"); result.add("区块：(" + stringValue(chunks, "minX") + ", " + stringValue(chunks, "minZ") + ") → (" + stringValue(chunks, "maxX") + ", " + stringValue(chunks, "maxZ") + ")"); }
-        if (record.has("memberIds")) { List<String> names = new ArrayList<>(); for (JsonElement id : record.getAsJsonArray("memberIds")) names.add(memberName(id.getAsString())); result.add("项目组：" + String.join("、", names)); }
-        if (record.has("required")) {
-            int confirmed = 0, promised = 0;
-            for (JsonElement element : array("pledges")) { JsonObject pledge = element.getAsJsonObject(); if (stringValue(pledge, "materialId").equals(stringValue(record, "id"))) { promised += integer(pledge, "quantity"); if (stringValue(pledge, "status").equals("confirmed")) confirmed += integer(pledge, "quantity"); } }
-            result.add("需求 " + integer(record, "required") + " · 已确认 " + confirmed + " · 尚缺 " + Math.max(0, integer(record, "required") - confirmed) + " · 已认捐 " + promised);
-        }
-        if (record.has("visibility")) result.add("可见范围：" + (stringValue(record, "visibility").equals("project") ? "项目组与小镇管理" : "全镇"));
-        if (record.has("dimension")) result.add("位置：" + stringValue(record, "dimension") + "  " + stringValue(record, "x") + ", " + stringValue(record, "y") + ", " + stringValue(record, "z"));
+        if (record.has("x")) result.add("位置：" + stringValue(record, "dimension") + "  " + stringValue(record, "x") + ", " + stringValue(record, "y") + ", " + stringValue(record, "z"));
         if (record.has("createdBy")) result.add("登记人：" + stringValue(record, "createdByName", memberName(stringValue(record, "createdBy"))));
-        if (!arrayValue(record, "overlapIds").isEmpty()) result.add("区域重叠提醒：与 " + arrayValue(record, "overlapIds").size() + " 个工程区块相交，请审批人核查。");
-        if (record.has("createdAt")) result.add("登记时间：" + stringValue(record, "createdAt"));
-        result.add("记录 ID：" + stringValue(record, "id"));
+        if (!arrayValue(record, "overlapIds").isEmpty()) result.add("与 " + arrayValue(record, "overlapIds").size() + " 个工程区域重叠");
         return result;
     }
 
     private void projectForm(JsonObject record, JsonObject chunks) {
         boolean editing = record.has("id");
-        List<TownForm.Field> fields = new ArrayList<>(List.of(text("name", "工程名称", stringValue(record, "name")), choice("type", "工程类型", stringValue(record, "type", "building"), new String[]{"building", "machine", "other"}, new String[]{"建筑", "机器", "其他"}), text("purpose", "建筑用途", stringValue(record, "purpose")), memberChoice("leaderId", "负责人", stringValue(record, "leaderId", playerId())), text("expectedAt", "预计完工时间（如 2026-11-01）", stringValue(record, "expectedAt")), text("notes", "备注", stringValue(record, "notes")), text("dimension", "维度", stringValue(record, "dimension", stringValue(chunks, "dimension", VersionClient.dimension()))), number("minX", "起始区块 X", integer(chunks, "minX")), number("minZ", "起始区块 Z", integer(chunks, "minZ")), number("maxX", "终止区块 X", integer(chunks, "maxX")), number("maxZ", "终止区块 Z", integer(chunks, "maxZ"))));
-        if (editing && !canConfirm(record)) fields.removeIf(field -> field.key().equals("leaderId"));
-        for (JsonElement element : array("members")) { JsonObject member = element.getAsJsonObject(); fields.add(toggle("projectMember_" + stringValue(member, "playerId"), "项目组 · " + stringValue(member, "name"), contains(arrayValue(record, "memberIds"), stringValue(member, "playerId")))); }
-        form(editing ? "修改工程预约" : "登记建设预约", fields, data -> {
-            JsonObject region = object("minX", integer(data, "minX"), "maxX", integer(data, "maxX"), "minZ", integer(data, "minZ"), "maxZ", integer(data, "maxZ"));
-            for (String key : List.of("minX", "minZ", "maxX", "maxZ")) data.remove(key);
-            data.add("chunks", region);
-            JsonArray members = new JsonArray();
-            for (TownForm.Field field : fields) if (field.key().startsWith("projectMember_")) { if (bool(data, field.key())) members.add(field.key().substring("projectMember_".length())); data.remove(field.key()); }
-            data.add("memberIds", members);
+        List<TownForm.Field> fields = List.of(text("name", "工程名称（预留可留空）", stringValue(record, "name")).compact(), choice("type", "类型", stringValue(record, "type", "building"), new String[]{"building", "machine", "other"}, new String[]{"建筑", "机器", "其他"}).compact(), memberChoice("leaderId", "负责人", stringValue(record, "leaderId", playerId())).compact(), text("purpose", "用途与备注", stringValue(record, "purpose") + (stringValue(record, "notes").isBlank() ? "" : " / " + stringValue(record, "notes"))).compact());
+        String dimension = stringValue(record, "dimension", stringValue(chunks, "dimension", VersionClient.dimension()));
+        List<String> details = List.of("选区：" + integer(chunks, "minX") + ", " + integer(chunks, "minZ") + " → " + integer(chunks, "maxX") + ", " + integer(chunks, "maxZ") + " · " + dimension);
+        VersionClient.show(new TownForm(this, editing ? "编辑工程" : "预留工程区域", fields, details, List.of(), data -> {
+            data.add("chunks", chunks.deepCopy()); data.addProperty("dimension", dimension); data.addProperty("notes", "");
             if (editing) data.addProperty("id", stringValue(record, "id")); else data.addProperty("worldId", gateway.worldId);
             perform(editing ? "project.update" : "project.create", data);
-        });
+        }));
     }
 
-    private void taskForm() { requireProject("task.manage", () -> form("添加工程任务", List.of(projectChoice("task.manage"), text("title", "任务名称", ""), text("description", "任务要求", "")), data -> perform("task.create", data))); }
-    private void materialForm() { requireProject("material.manage", () -> form("登记材料需求", List.of(projectChoice("material.manage"), text("name", "材料名称", ""), number("required", "总需求数量", 1)), data -> perform("material.create", data))); }
     private void messageForm() {
-        List<TownForm.Field> fields = positionFields();
-        fields.add(0, text("text", "留言内容", ""));
-        fields.add(1, optionalProjectChoice());
-        fields.add(2, choice("visibility", "可见范围", "town", new String[]{"town", "project"}, new String[]{"全镇", "仅项目组"}));
-        fields.add(number("radius", "附近提示范围（方块，1–" + maximumRadius() + "）", Math.min(maximumRadius(), gateway.config().nearbyRadius)));
-        form("留下空间留言", fields, data -> { if (stringValue(data, "projectId").isEmpty()) data.remove("projectId"); data.addProperty("worldId", gateway.worldId); perform("message.create", data); });
+        if (Minecraft.getInstance().player == null || !XaeroBridge.isCurrentWorld()) {
+            gateway.status = "请进入对应周目并绑定个人地图后，在当前位置留言";
+            return;
+        }
+        JsonObject location = VersionClient.position();
+        List<TownForm.Field> fields = List.of(text("text", "留言内容", ""), optionalProjectChoice().compact(), number("radius", "提示距离（方块）", Math.min(maximumRadius(), gateway.config().nearbyRadius)).compact());
+        VersionClient.show(new TownForm(this, "留下留言", fields, List.of("自动记录当前位置：" + stringValue(location, "dimension") + " " + integer(location, "x") + ", " + integer(location, "y") + ", " + integer(location, "z")), List.of(), data -> {
+            if (stringValue(data, "projectId").isEmpty()) data.remove("projectId");
+            for (String key : List.of("dimension", "x", "y", "z")) data.add(key, location.get(key));
+            data.addProperty("worldId", gateway.worldId); perform("message.create", data);
+        }));
     }
-    private void facilityForm(JsonObject record) {
-        List<TownForm.Field> fields = positionFields(record);
-        fields.add(0, text("name", "设施名称", stringValue(record, "name")));
-        fields.add(1, text("instructions", "操作方式", stringValue(record, "instructions")));
-        fields.add(2, text("rules", "使用规则", stringValue(record, "rules")));
-        fields.add(3, memberChoice("maintainerId", "维护人", stringValue(record, "maintainerId", playerId())));
-        fields.add(number("radius", "附近提示范围（方块，1–" + maximumRadius() + "）", record.has("radius") ? integer(record, "radius") : Math.min(maximumRadius(), gateway.config().nearbyRadius)));
-        form(record.has("id") ? "编辑公共设施说明卡" : "登记公共设施", fields, data -> { data.addProperty("worldId", gateway.worldId); if (record.has("id")) data.addProperty("id", stringValue(record, "id")); perform(record.has("id") ? "facility.update" : "facility.create", data); });
-    }
-    private void ticketForm() {
-        if (Minecraft.getInstance().player == null || !XaeroBridge.isCurrentWorld()) { gateway.status = "请先选择并绑定玩家当前世界与周目，再报告维修"; return; }
-        List<TownForm.Field> fields = positionFields();
-        fields.add(0, choice("category", "快捷故障类型", "机器堵塞", new String[]{"机器堵塞", "照明缺失", "线路断裂", "其他故障"}, new String[]{"机器堵塞", "照明缺失", "线路断裂", "其他故障"}));
-        fields.add(1, text("title", "补充简述（可留空使用故障类型）", ""));
-        fields.add(1, text("description", "故障详情", ""));
-        fields.add(2, optionalProjectChoice());
-        form("报告维修 · 已带上当前位置", fields, data -> { if (stringValue(data, "title").isBlank()) data.addProperty("title", stringValue(data, "category")); data.remove("category"); data.addProperty("worldId", gateway.worldId); if (stringValue(data, "projectId").isEmpty()) data.remove("projectId"); perform("ticket.create", data); });
-    }
-    private void quickTicket(String title) {
-        if (Minecraft.getInstance().player == null || !XaeroBridge.isCurrentWorld()) { gateway.status = "请先选择并绑定玩家当前世界与周目，再报告维修"; return; }
-        JsonObject payload = VersionClient.position();
-        payload.addProperty("worldId", gateway.worldId); payload.addProperty("title", title);
-        if (!projectId.isEmpty()) payload.addProperty("projectId", projectId);
-        confirm("快速报修 · " + title, "周目：" + worldName(gateway.worldId) + "\n位置：" + stringValue(payload, "dimension") + " " + stringValue(payload, "x") + ", " + stringValue(payload, "y") + ", " + stringValue(payload, "z"), () -> perform("ticket.create", payload));
-    }
-    private List<TownForm.Field> positionFields() { return positionFields(VersionClient.position()); }
-    private List<TownForm.Field> positionFields(JsonObject location) {
-        return new ArrayList<>(List.of(text("dimension", "维度", stringValue(location, "dimension", VersionClient.dimension())), number("x", "X 坐标", integer(location, "x")), number("y", "Y 坐标", integer(location, "y")), number("z", "Z 坐标", integer(location, "z"))));
+
+    private void ticketForm(JsonObject project) {
+        JsonObject location = VersionClient.position();
+        boolean atProjectWorld = Minecraft.getInstance().player != null && XaeroBridge.isCurrentWorld() && stringValue(location, "dimension").equals(stringValue(project, "dimension"));
+        if (!atProjectWorld) {
+            JsonObject chunks = objectValue(project, "chunks");
+            location = object("dimension", stringValue(project, "dimension"), "x", (integer(chunks, "minX") + integer(chunks, "maxX") + 1) * 8, "y", 64, "z", (integer(chunks, "minZ") + integer(chunks, "maxZ") + 1) * 8);
+        }
+        JsonObject position = location;
+        List<TownForm.Field> fields = List.of(choice("title", "故障类型", "机器堵塞", new String[]{"机器堵塞", "照明缺失", "线路断裂", "其他故障"}, new String[]{"机器堵塞", "照明缺失", "线路断裂", "其他故障"}).compact(), text("description", "补充说明", "").compact());
+        VersionClient.show(new TownForm(this, "维护报修 · " + stringValue(project, "name"), fields, List.of((atProjectWorld ? "当前位置：" : "工程中心：") + stringValue(position, "dimension") + " " + integer(position, "x") + ", " + integer(position, "y") + ", " + integer(position, "z")), List.of(), data -> {
+            for (String key : List.of("dimension", "x", "y", "z")) data.add(key, position.get(key));
+            data.addProperty("projectId", stringValue(project, "id")); data.addProperty("worldId", stringValue(project, "worldId")); perform("ticket.create", data);
+        }));
     }
 
     private void connectionForm() {
@@ -418,20 +352,6 @@ public final class TownScreen extends Screen {
         for (JsonElement element : array("worlds")) { JsonObject world = element.getAsJsonObject(); actions.add(action(stringValue(world, "name") + (bool(world, "archived") ? " · 历史" : " · 进行中"), () -> { gateway.selectWorld(stringValue(world, "id")); projectId = ""; VersionClient.show(this); })); }
         VersionClient.show(new TownForm(this, "选择世界与周目", List.of(), List.of("归档周目保存工程与业务标记，并按 Xaero 世界标识关联个人本地历史地图。"), actions, null));
     }
-    private void chooseProject() {
-        List<TownForm.Action> actions = new ArrayList<>();
-        actions.add(action("全部工程", () -> { projectId = ""; page = 0; VersionClient.show(this); }));
-        for (JsonElement element : array("projects")) { JsonObject project = element.getAsJsonObject(); actions.add(action(stringValue(project, "name") + " · " + state(stringValue(project, "status")), () -> { projectId = stringValue(project, "id"); page = 0; VersionClient.show(this); })); }
-        VersionClient.show(new TownForm(this, "筛选工程", List.of(), List.of(), actions, null));
-    }
-    private void requireProject(String permission, Runnable continuation) {
-        if (manageableProjects(permission).isEmpty()) { gateway.status = "暂无可维护的工程；请先登记工程或由负责人加入项目组"; return; }
-        continuation.run();
-    }
-    private void review(String id, String decision) {
-        form(decision.equals("reject") ? "驳回预约" : decision.equals("accept") ? "工程验收" : "批准预约", List.of(text("reason", "审批说明", "")), data -> { data.addProperty("id", id); data.addProperty("decision", decision); perform("project.review", data); });
-    }
-
     private void memberDetail(JsonObject member) {
         String id = stringValue(member, "playerId");
         List<TownForm.Action> actions = new ArrayList<>();
@@ -491,15 +411,6 @@ public final class TownScreen extends Screen {
     }
     private void passwordForm() { form("设置小镇加入密码", List.of(text("password", "加入密码（留空即关闭）", "")), data -> perform("town.update", data)); }
 
-    private TownForm.Field projectChoice(String permission) {
-        JsonArray available = manageableProjects(permission);
-        String selected = projectId;
-        boolean found = false;
-        for (JsonElement element : available) if (stringValue(element.getAsJsonObject(), "id").equals(selected)) found = true;
-        if (!found && !available.isEmpty()) selected = stringValue(available.get(0).getAsJsonObject(), "id");
-        return collectionChoice("projectId", "所属工程", available, "id", "name", selected, false);
-    }
-    private JsonArray manageableProjects(String permission) { JsonArray result = new JsonArray(); for (JsonElement element : array("projects")) { JsonObject project = element.getAsJsonObject(); if (canManageProject(project, permission) && !stringValue(project, "status").equals("completed")) result.add(project); } return result; }
     private int maximumRadius() { int maximum = integer(objectValue(gateway.snapshot, "limits"), "maximumProximityRadius"); return maximum > 0 ? maximum : 256; }
     private TownForm.Field optionalProjectChoice() { return collectionChoice("projectId", "关联工程", array("projects"), "id", "name", projectId, true); }
     private TownForm.Field roleChoice(String selected) {
@@ -557,8 +468,7 @@ public final class TownScreen extends Screen {
     static boolean contains(JsonArray array, String value) { for (JsonElement item : array) if (item.isJsonPrimitive() && item.getAsString().equals(value)) return true; return false; }
     private boolean has(String permission) { return contains(array("permissions"), permission); }
     private JsonObject project(String id) { for (JsonElement element : array("projects")) if (stringValue(element.getAsJsonObject(), "id").equals(id)) return element.getAsJsonObject(); return new JsonObject(); }
-    private boolean canManageProject(JsonObject project, String permission) { return has(permission) && (has("project.approve") || stringValue(project, "leaderId").equals(playerId()) || contains(arrayValue(project, "memberIds"), playerId())); }
-    private boolean canConfirm(JsonObject project) { return has("project.approve") || stringValue(project, "leaderId").equals(playerId()); }
+    private boolean canManageProject(JsonObject project, String permission) { return has(permission) && (has("project.approve") || stringValue(project, "leaderId").equals(playerId())); }
     private boolean isMayor() { return stringValue(objectValue(gateway.snapshot, "town"), "ownerId").equals(playerId()); }
     private String playerId() { return stringValue(gateway.player(), "id", stringValue(gateway.player(), "playerId")); }
     private boolean archived() { for (JsonElement element : array("worlds")) { JsonObject world = element.getAsJsonObject(); if (stringValue(world, "id").equals(gateway.worldId)) return bool(world, "archived"); } return false; }
@@ -572,17 +482,11 @@ public final class TownScreen extends Screen {
         if (record.has("roleId")) return roleName(stringValue(record, "roleId")) + " · " + stringValue(record, "playerId");
         if (record.has("permissions")) return arrayValue(record, "permissions").size() + " 项权限";
         if (record.has("worldKey")) return stringValue(record, "serverAddress") + " · " + stringValue(record, "worldKey");
-        if (record.has("required")) {
-            int confirmed = 0;
-            for (JsonElement element : array("pledges")) { JsonObject pledge = element.getAsJsonObject(); if (stringValue(pledge, "materialId").equals(stringValue(record, "id")) && stringValue(pledge, "status").equals("confirmed")) confirmed += integer(pledge, "quantity"); }
-            return "尚缺 " + Math.max(0, integer(record, "required") - confirmed) + " / 需求 " + stringValue(record, "required") + " · " + projectName(stringValue(record, "projectId"));
-        }
         if (record.has("projectId")) return projectName(stringValue(record, "projectId")) + " · " + memberName(stringValue(record, "createdBy"));
         if (record.has("purpose")) return stringValue(record, "purpose") + " · " + memberName(stringValue(record, "leaderId"));
-        if (record.has("instructions")) return stringValue(record, "instructions");
         return stringValue(record, "dimension") + (record.has("x") ? " · " + stringValue(record, "x") + ", " + stringValue(record, "y") + ", " + stringValue(record, "z") : "");
     }
-    static String state(String value) { return switch (value) { case "pending" -> "待审批"; case "active" -> "施工中"; case "rejected" -> "已驳回"; case "review" -> "待确认"; case "completed" -> "已完成"; case "open" -> "待领取 / 待处理"; case "claimed" -> "已领取"; case "pledged" -> "已认捐"; case "submitted" -> "待确认交付"; case "confirmed" -> "已确认交付"; case "working" -> "处理中"; case "resolved" -> "已解决"; case "archived" -> "历史归档"; default -> value; }; }
+    static String state(String value) { return switch (value) { case "planned" -> "计划中"; case "active" -> "施工中"; case "completed" -> ""; case "maintenance" -> "待维护"; case "open" -> "待处理"; case "working" -> "处理中"; case "resolved" -> "已解决"; case "archived" -> "历史归档"; default -> value; }; }
 
     static void background(GuiGraphicsExtractor graphics, int width, int height) { TownStyle.background(graphics, width, height); }
     private void moveScroll(int direction, boolean pageStep) {
@@ -609,20 +513,25 @@ public final class TownScreen extends Screen {
         double progress = gateway.config().animationEnabled ? Math.min(1, (System.nanoTime() - openedAt) / 260_000_000d) : 1;
         double eased = 1 - Math.pow(1 - progress, 3);
         TownStyle.icon(graphics, 0, contentLeft + 1, window.top() + 10, TownStyle.FRAME_TEXT);
-        graphics.text(font, "Yet Another Town", contentLeft + 16 + (int) ((1 - eased) * 4), window.top() + 10, TownStyle.FRAME_TEXT, false);
+        graphics.text(font, font.plainSubstrByWidth(TownStyle.title(), contentWidth - 50), contentLeft + 16 + (int) ((1 - eased) * 4), window.top() + 10, TownStyle.FRAME_TEXT, false);
         graphics.enableScissor(contentLeft, bodyTop, contentLeft + contentWidth, bodyBottom);
         for (Panel panel : panels) TownStyle.panel(graphics, panel.x(), panel.y(), panel.width(), panel.height(), panel.accented());
         for (Card card : cards) {
             TownStyle.panel(graphics, card.x(), card.y(), card.width(), 44, false);
-            TownStyle.panel(graphics, card.x() + 7, card.y() + 10, 23, 23, false);
-            TownStyle.icon(graphics, tab == 1 ? section + 1 : 3, card.x() + 15, card.y() + 18, ACCENT);
-            int textWidth = card.width() - 104;
+            boolean projectRow = tab == 1 && section == 0;
+            int textOffset = projectRow ? 12 : 38;
+            if (!projectRow) {
+                TownStyle.panel(graphics, card.x() + 7, card.y() + 10, 23, 23, false);
+                TownStyle.icon(graphics, tab == 1 ? section + 1 : 3, card.x() + 15, card.y() + 18, ACCENT);
+            }
+            int buttonSpace = card.repair() ? 120 : 66;
+            int textWidth = card.width() - textOffset - buttonSpace;
             int titleY = card.y() + 9;
             int badgeWidth = card.state().isEmpty() ? 0 : Math.min(79, font.width(card.state()) + 12);
-            graphics.text(font, font.plainSubstrByWidth(card.title(), Math.max(0, textWidth - (badgeWidth > 0 ? badgeWidth + 8 : 0))), card.x() + 38, titleY, TEXT, true);
-            graphics.text(font, font.plainSubstrByWidth(card.subtitle(), textWidth), card.x() + 38, card.y() + 26, MUTED, false);
+            graphics.text(font, font.plainSubstrByWidth(card.title(), Math.max(0, textWidth - (badgeWidth > 0 ? badgeWidth + 8 : 0))), card.x() + textOffset, titleY, TEXT, true);
+            graphics.text(font, font.plainSubstrByWidth(card.subtitle(), Math.max(0, textWidth)), card.x() + textOffset, card.y() + 26, MUTED, false);
             if (badgeWidth > 0) {
-                int badgeX = card.x() + card.width() - 66 - badgeWidth;
+                int badgeX = card.x() + card.width() - buttonSpace - badgeWidth;
                 graphics.fill(badgeX, titleY - 3, badgeX + badgeWidth, titleY + 11, TownStyle.RAISED);
                 graphics.text(font, font.plainSubstrByWidth(card.state(), badgeWidth - 12), badgeX + 6, titleY, ACCENT, false);
             }

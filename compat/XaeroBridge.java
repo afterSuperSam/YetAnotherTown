@@ -261,8 +261,8 @@ public final class XaeroBridge {
             for (JsonElement element : arrayValue(TownGateway.get().snapshot, "projects")) {
                 JsonObject project = element.getAsJsonObject();
                 if (!matching || !stringValue(project, "dimension").equals(dimension)) continue;
-                int color = switch (stringValue(project, "status")) { case "pending" -> 0xFFDAB75C; case "active" -> 0xFFE49754; case "review" -> 0xFF69B4D9; case "completed" -> 0xFF73BC78; default -> 0xFF999999; };
-                if (drawArea(graphics, objectValue(project, "chunks"), color, stringValue(project, "name") + " · " + state(stringValue(project, "status")), mouseX, mouseY)) {
+                int color = switch (stringValue(project, "status")) { case "planned" -> 0xFFDAB75C; case "active" -> 0xFFE49754; case "maintenance" -> 0xFFDF9481; case "completed" -> 0xFF73BC78; default -> 0xFF999999; };
+                if (drawArea(graphics, objectValue(project, "chunks"), color, stringValue(project, "name") + (state(stringValue(project, "status")).isBlank() ? "" : " · " + state(stringValue(project, "status"))), mouseX, mouseY)) {
                     String type = switch (stringValue(project, "type")) { case "building" -> "建筑"; case "machine" -> "机器"; default -> "其他"; };
                     graphics.setTooltipForNextFrame(font, List.of(Component.literal(stringValue(project, "name") + " · " + type), Component.literal("登记：" + stringValue(project, "createdByName", stringValue(project, "createdBy"))), Component.literal("备注：" + stringValue(project, "notes"))), java.util.Optional.empty(), mouseX, mouseY);
                 }

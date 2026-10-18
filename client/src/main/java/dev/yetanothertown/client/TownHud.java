@@ -12,7 +12,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
-/** 附近留言和设施说明卡，以及显式选择的方向距离导航。 */
+/** 附近留言与维护工单，以及显式选择的方向距离导航。 */
 public final class TownHud {
     private record Nearby(JsonObject record, String category, double distance) { }
     private TownHud() { }
@@ -32,7 +32,7 @@ public final class TownHud {
             if (!TownScreen.stringValue(world, "id").equals(gateway.worldId)) continue;
             if (TownScreen.bool(world, "archived")) return result;
         }
-        for (String collection : List.of("messages", "facilities", "tickets")) for (JsonElement element : TownScreen.arrayValue(snapshot, collection)) {
+        for (String collection : List.of("messages", "tickets")) for (JsonElement element : TownScreen.arrayValue(snapshot, collection)) {
             JsonObject record = element.getAsJsonObject();
             if (!TownScreen.stringValue(record, "worldId").equals(gateway.worldId)) continue;
             if (!TownScreen.stringValue(record, "dimension").equals(VersionClient.dimension())) continue;
@@ -52,7 +52,7 @@ public final class TownHud {
             }
             double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
             int radius = record.has("radius") ? Math.min(TownScreen.integer(record, "radius"), gateway.config().nearbyRadius) : gateway.config().nearbyRadius;
-            if (distance <= radius) result.add(new Nearby(record, collection.equals("messages") ? "留言" : collection.equals("facilities") ? "设施" : "维修", distance));
+            if (distance <= radius) result.add(new Nearby(record, collection.equals("messages") ? "留言" : "维修", distance));
         }
         result.sort(Comparator.comparingDouble(Nearby::distance));
         return result;
@@ -109,12 +109,12 @@ public final class TownHud {
             actions.add(new TownForm.Action(entry.category() + " · " + title + " · " + Math.round(entry.distance()) + "m", () -> showDetail(record, title)));
         }
         if (VersionClient.navigation() != null) actions.add(new TownForm.Action("清除当前方向导航", () -> { VersionClient.clearNavigation(); VersionClient.show(null); }));
-        VersionClient.show(new TownForm(VersionClient.currentScreen(), "附近的小镇信息", List.of(), List.of(entries.isEmpty() ? "附近没有可见的留言、设施或未解决工单。" : "提示只显示你有权查阅的内容。"), actions, null));
+        VersionClient.show(new TownForm(VersionClient.currentScreen(), "附近的小镇信息", List.of(), List.of(entries.isEmpty() ? "附近没有留言或未解决工单。" : "提示只显示你有权查阅的内容。"), actions, null));
     }
 
     private static void showDetail(JsonObject record, String title) {
         List<String> lines = new ArrayList<>();
-        String[][] fields = {{"text", "留言"}, {"instructions", "操作方式"}, {"rules", "使用规则"}, {"description", "故障详情"}, {"resolution", "处理结果"}, {"maintainerId", "维护人 UUID"}, {"createdByName", "登记人"}};
+        String[][] fields = {{"text", "留言"}, {"description", "故障详情"}, {"resolution", "处理结果"}, {"createdByName", "登记人"}};
         for (String[] field : fields) if (record.has(field[0])) lines.add(field[1] + "：" + TownScreen.stringValue(record, field[0]));
         lines.add("坐标：" + TownScreen.stringValue(record, "dimension") + " " + TownScreen.stringValue(record, "x") + ", " + TownScreen.stringValue(record, "y") + ", " + TownScreen.stringValue(record, "z"));
         VersionClient.show(new TownForm(null, title, List.of(), lines, List.of(new TownForm.Action("设为导航目标", () -> { if (VersionClient.navigate(record)) VersionClient.show(null); })), null));

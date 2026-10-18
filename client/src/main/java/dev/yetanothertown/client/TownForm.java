@@ -20,10 +20,11 @@ import java.util.function.Consumer;
 
 /** 通用表单负责输入、选择、滚动与明确提交。 */
 final class TownForm extends Screen {
-    record Field(String key, String label, String initial, String[] values, String[] labels, boolean number) {
-        static Field text(String key, String label, String value) { return new Field(key, label, value, null, null, false); }
-        static Field number(String key, String label, int value) { return new Field(key, label, Integer.toString(value), null, null, true); }
-        static Field choice(String key, String label, String value, String[] values, String[] labels) { return new Field(key, label, value, values, labels, false); }
+    record Field(String key, String label, String initial, String[] values, String[] labels, boolean number, boolean paired) {
+        static Field text(String key, String label, String value) { return new Field(key, label, value, null, null, false, false); }
+        static Field number(String key, String label, int value) { return new Field(key, label, Integer.toString(value), null, null, true, true); }
+        static Field choice(String key, String label, String value, String[] values, String[] labels) { return new Field(key, label, value, values, labels, false, true); }
+        Field compact() { return new Field(key, label, initial, values, labels, number, true); }
         static Field toggle(String key, String label, boolean value) { return choice(key, label, Boolean.toString(value), new String[]{"false", "true"}, new String[]{"关闭", "开启"}); }
     }
     record Action(String label, Runnable run) { }
@@ -89,45 +90,32 @@ final class TownForm extends Screen {
             y += 7;
         }
         if (!description.isEmpty() && (!fields.isEmpty() || !actions.isEmpty())) { separators.add(y); y += 14; }
-        for (Field field : fields) {
-            labels.add(new TextLine(field.label(), contentLeft, y, TownStyle.TEXT));
-            int inputY = y + 14;
-            if (inputY >= bodyTop && inputY + 20 <= bodyBottom) {
-                if (field.values() == null) {
-                    EditBox input = new EditBox(font, contentLeft, inputY, contentWidth, 20, Component.literal(field.label()));
-                    input.setMaxLength(2048);
-                    input.setValue(values.get(field.key()));
-                    input.setResponder(value -> values.put(field.key(), value));
-                    input.setTextColor(TownStyle.TEXT);
-                    input.setTextColorUneditable(TownStyle.MUTED);
-                    input.setEditable(!submitting);
-                    input.active = !submitting;
-                    fieldWidgets.put(field.key(), input);
-                    addRenderableWidget(input);
-                } else {
-                    String current = values.get(field.key());
-                    int index = 0;
-                    for (int i = 0; i < field.values().length; i++) if (field.values()[i].equals(current)) index = i;
-                    final int selected = index;
-                    Button choice = TownStyle.button(field.labels()[selected] + "  ›", contentLeft, inputY, contentWidth, () -> {
-                        values.put(field.key(), field.values()[(selected + 1) % field.values().length]);
-                        rebuild();
-                    }, false);
-                    choice.active = !submitting;
-                    fieldWidgets.put(field.key(), choice);
-                    addRenderableWidget(choice);
+        for (int index = 0; index < fields.size();) {
+            Field field = fields.get(index);
+            boolean pair = field.paired() && index + 1 < fields.size() && fields.get(index + 1).paired() && contentWidth >= 240;
+            int fieldWidth = pair ? (contentWidth - 8) / 2 : contentWidth;
+            addField(field, contentLeft, y, fieldWidth);
+            if (pair) addField(fields.get(index + 1), contentLeft + fieldWidth + 8, y, fieldWidth);
+            index += pair ? 2 : 1;
+            y += 40;
+        }
+        if (!fields.isEmpty() && !actions.isEmpty()) { separators.add(y - 3); y += 8; }
+        for (int index = 0; index < actions.size();) {
+            Action action = actions.get(index);
+            int halfWidth = (contentWidth - 8) / 2;
+            boolean pair = index + 1 < actions.size() && font.width(action.label()) <= halfWidth - 12 && font.width(actions.get(index + 1).label()) <= halfWidth - 12;
+            int actionWidth = pair ? halfWidth : contentWidth;
+            if (y >= bodyTop && y + 20 <= bodyBottom) {
+                Button actionButton = TownStyle.button(action.label(), contentLeft, y, actionWidth, action.run(), false);
+                actionButton.active = !submitting; addRenderableWidget(actionButton);
+                if (pair) {
+                    Action next = actions.get(index + 1);
+                    Button nextButton = TownStyle.button(next.label(), contentLeft + actionWidth + 8, y, actionWidth, next.run(), false);
+                    nextButton.active = !submitting; addRenderableWidget(nextButton);
                 }
             }
-            y += 44;
-        }
-        if (!fields.isEmpty() && !actions.isEmpty()) { separators.add(y - 3); y += 10; }
-        for (Action action : actions) {
-            if (y >= bodyTop && y + 20 <= bodyBottom) {
-                Button actionButton = TownStyle.button(action.label(), contentLeft, y, contentWidth, action.run(), false);
-                actionButton.active = !submitting;
-                addRenderableWidget(actionButton);
-            }
-            y += 28;
+            index += pair ? 2 : 1;
+            y += 26;
         }
         maximumScroll = Math.max(0, y + scroll - bodyBottom);
         if (scroll > maximumScroll) { scroll = maximumScroll; rebuild(); return; }
@@ -139,6 +127,28 @@ final class TownForm extends Screen {
             save.active = !submitting;
         }
         if (!submitting && fieldWidgets.containsKey(focusedKey)) setInitialFocus(fieldWidgets.get(focusedKey));
+    }
+
+    private void addField(Field field, int x, int y, int width) {
+        labels.add(new TextLine(font.plainSubstrByWidth(field.label(), width), x, y, TownStyle.TEXT));
+        int inputY = y + 12;
+        if (inputY < bodyTop || inputY + 20 > bodyBottom) return;
+        if (field.values() == null) {
+            EditBox input = new EditBox(font, x, inputY, width, 20, Component.literal(field.label()));
+            input.setMaxLength(2048); input.setValue(values.get(field.key()));
+            input.setResponder(value -> values.put(field.key(), value));
+            input.setTextColor(TownStyle.TEXT); input.setTextColorUneditable(TownStyle.MUTED);
+            input.setEditable(!submitting); input.active = !submitting;
+            fieldWidgets.put(field.key(), input); addRenderableWidget(input);
+        } else {
+            int index = 0;
+            for (int option = 0; option < field.values().length; option++) if (field.values()[option].equals(values.get(field.key()))) index = option;
+            final int selected = index;
+            Button choice = TownStyle.button(field.labels()[selected], x, inputY, width, () -> {
+                values.put(field.key(), field.values()[(selected + 1) % field.values().length]); rebuild();
+            }, false);
+            choice.active = !submitting; fieldWidgets.put(field.key(), choice); addRenderableWidget(choice);
+        }
     }
 
     private void save() {
@@ -206,7 +216,7 @@ final class TownForm extends Screen {
     public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
         TownStyle.background(graphics, width, height);
         TownStyle.window(graphics, window, bodyTop, bodyBottom);
-        graphics.text(font, "Yet Another Town", left + 16, window.top() + 11, TownStyle.FRAME_MUTED, false);
+        graphics.text(font, font.plainSubstrByWidth(TownStyle.title(), panelWidth - 68), left + 16, window.top() + 11, TownStyle.FRAME_MUTED, false);
         graphics.text(font, font.plainSubstrByWidth(title.getString(), panelWidth - 38), left + 16, window.top() + 29, TownStyle.FRAME_TEXT, false);
         graphics.enableScissor(left + 12, bodyTop, left + panelWidth - 12, bodyBottom);
         for (int y : separators) graphics.fill(left + 16, y, left + panelWidth - 22, y + 1, TownStyle.LINE);
