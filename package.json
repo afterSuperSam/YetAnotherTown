@@ -1,12 +1,13 @@
 {
   "name": "yetanothertown",
-  "version": "1.0.0-alpha.3",
+  "version": "1.0.0-alpha.4",
   "private": true,
   "type": "module",
   "scripts": {
     "check": "node tools/build.mjs check",
     "test": "node tools/build.mjs test",
     "test:client": "node tools/build.mjs client-test",
+    "check:compat": "node tools/build.mjs compatibility",
     "build": "node tools/build.mjs build"
   },
   "engines": { "node": ">=24" }

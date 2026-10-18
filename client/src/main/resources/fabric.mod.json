@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "yetanothertown",
-  "version": "1.0.0-alpha.3",
+  "version": "1.0.0-alpha.4",
   "name": "YetAnotherTown",
   "description": "小镇工程登记、空间留言与维护报修平台",
   "authors": ["Sam"],
@@ -12,11 +12,11 @@
   },
   "suggests": {"modmenu": "*"},
   "depends": {
-    "fabricloader": ">=0.19.5",
+    "fabricloader": ">=0.19.3",
     "java": ">=25",
     "minecraft": ["26.1.2", "26.2", "26.3"],
-    "fabric-api": "*",
-    "xaeroworldmap": ">=1.47.0",
-    "xaerominimap": ">=26.6.0"
+    "fabric-api": ">=0.155.0",
+    "xaeroworldmap": ">=1.45.0",
+    "xaerominimap": ">=26.4.2"
   }
 }

@@ -386,6 +386,50 @@
       "java": {
         "component": "java-runtime-epsilon",
         "majorVersion": 25
+      },
+      "alternatives": {
+        "xaeros-minimap": [
+          {
+            "version": "fabric-26.3-26.5.3",
+            "filename": "xaerominimap-fabric-26.3-26.5.3.jar",
+            "url": "https://cdn.modrinth.com/data/1bokaNcj/versions/YPkAliDt/xaerominimap-fabric-26.3-26.5.3.jar",
+            "sha512": "86de35d7c6ae10441d9a1e7f14656a87dc3cfa17487b122ea5bfa6f322b56bfa1b96662903a36f2ff0e0d579644474510c4463ea21dea8223b8931d6dbf64e61"
+          },
+          {
+            "version": "fabric-26.3-26.5.2",
+            "filename": "xaerominimap-fabric-26.3-26.5.2.jar",
+            "url": "https://cdn.modrinth.com/data/1bokaNcj/versions/ie70HnZq/xaerominimap-fabric-26.3-26.5.2.jar",
+            "sha512": "f71d9406e8ec5511e944bc204a5a9bbd9831b040940a6bb169cb8dfe97f4eb62166a7a01016b5663228c405db505b474f257339a17dbf49acabfa867988cf594"
+          }
+        ],
+        "fabric-api": [
+          {
+            "version": "0.162.0+26.3",
+            "filename": "fabric-api-0.162.0+26.3.jar",
+            "url": "https://cdn.modrinth.com/data/P7dR8mSH/versions/v2j28coa/fabric-api-0.162.0%2B26.3.jar",
+            "sha512": "5ab70908952f1d2346d16b122ca31327f4055db59c279a1bc3c3c581ce359bb541cba15730f55b0727be7c7c4debc4a4412a183c228e0d4dea81c734f7b412ce"
+          },
+          {
+            "version": "0.161.0+26.3",
+            "filename": "fabric-api-0.161.0+26.3.jar",
+            "url": "https://cdn.modrinth.com/data/P7dR8mSH/versions/bNnaTiuM/fabric-api-0.161.0%2B26.3.jar",
+            "sha512": "ed6b2586d6fde11fde8472f5a527c51e99b67026e46f94d4bfd85e7e28ce5ee299173ee16ad576ceb51f39f98d30a811086a6deb1a86a524859cc16e12da109d"
+          }
+        ],
+        "xaeros-world-map": [
+          {
+            "version": "fabric-26.3-1.46.4",
+            "filename": "xaeroworldmap-fabric-26.3-1.46.4.jar",
+            "url": "https://cdn.modrinth.com/data/NcUtCpym/versions/UleMm8za/xaeroworldmap-fabric-26.3-1.46.4.jar",
+            "sha512": "7f77d9bbede1669373293134167378729170c36ab0eb3d28383f517d208de5d465fd3ef1ae32dfc043bac5e3d5f951797db1fa874c1d85375be5c52c3c859d61"
+          },
+          {
+            "version": "fabric-26.3-1.46.3",
+            "filename": "xaeroworldmap-fabric-26.3-1.46.3.jar",
+            "url": "https://cdn.modrinth.com/data/NcUtCpym/versions/wFzCYgM6/xaeroworldmap-fabric-26.3-1.46.3.jar",
+            "sha512": "058a245996af78ca74878ba03c5977e619bb39fff160250c8df8da45b2cef298588a10995b3cd366177ebf0dc70ccbee16da393f74332b4914baf777bc35ba55"
+          }
+        ]
       }
     },
     "26.2": {
@@ -779,6 +823,50 @@
       "java": {
         "component": "java-runtime-epsilon",
         "majorVersion": 25
+      },
+      "alternatives": {
+        "xaeros-minimap": [
+          {
+            "version": "fabric-26.2-26.5.1",
+            "filename": "xaerominimap-fabric-26.2-26.5.1.jar",
+            "url": "https://cdn.modrinth.com/data/1bokaNcj/versions/VlMbRW2O/xaerominimap-fabric-26.2-26.5.1.jar",
+            "sha512": "ceee38ce9f7dac967b7ff42eb940c00cc50596b0d9da8401a59b55be904fee703d91a72ea00d0e235f33c7fe5d75f7804ac055de92d34b0873cbc1043a101c0d"
+          },
+          {
+            "version": "fabric-26.2-26.5.0",
+            "filename": "xaerominimap-fabric-26.2-26.5.0.jar",
+            "url": "https://cdn.modrinth.com/data/1bokaNcj/versions/tBIPWIKW/xaerominimap-fabric-26.2-26.5.0.jar",
+            "sha512": "b00df8bb410fae12b08788044f2f03cec34bfc4506da419d11d364e2f229b814dbb272d297fbe4b0cdfac18beeeed4dc8f1bdfc96fb113867857527e31965049"
+          }
+        ],
+        "fabric-api": [
+          {
+            "version": "0.160.0+26.2",
+            "filename": "fabric-api-0.160.0+26.2.jar",
+            "url": "https://cdn.modrinth.com/data/P7dR8mSH/versions/UWwhUX3k/fabric-api-0.160.0%2B26.2.jar",
+            "sha512": "1a08b68b2c2c90f6005ef441ab71b65f464be964005b9c0d18e6fc6c5ec53fe346e7dd76189c4f09ade59ef9bc3b836376a2cc71d4ce6e9be47122477d1bbd1e"
+          },
+          {
+            "version": "0.159.0+26.2",
+            "filename": "fabric-api-0.159.0+26.2.jar",
+            "url": "https://cdn.modrinth.com/data/P7dR8mSH/versions/BgeCGgGZ/fabric-api-0.159.0%2B26.2.jar",
+            "sha512": "4d5d9c3daafe19be187f638f2d6de3db26420b8720ef5a266cfa81f79d9019cab8c86e6d47478bbb0b0ee0b8f769204b72c843caa2e4aabd94adc41f3dafb518"
+          }
+        ],
+        "xaeros-world-map": [
+          {
+            "version": "fabric-26.2-1.46.1",
+            "filename": "xaeroworldmap-fabric-26.2-1.46.1.jar",
+            "url": "https://cdn.modrinth.com/data/NcUtCpym/versions/q0Wvp46X/xaeroworldmap-fabric-26.2-1.46.1.jar",
+            "sha512": "9e9747a3a7ee4ad1c00944c3c922895044a77f5a5d9a8a12eb012676dae66e3800440d7f4a1603e788bfdc2cef8a42be74e42dd01985c94f9073c80b00309775"
+          },
+          {
+            "version": "fabric-26.2-1.46.0",
+            "filename": "xaeroworldmap-fabric-26.2-1.46.0.jar",
+            "url": "https://cdn.modrinth.com/data/NcUtCpym/versions/DxU1zijU/xaeroworldmap-fabric-26.2-1.46.0.jar",
+            "sha512": "37284868eed7bb105362ba1df3da38e860a0f889e50dcae43ddaf167c33817b8ece289770f89b138e327b145d15ae36a4df850202770236a4eefd7b413158438"
+          }
+        ]
       }
     },
     "26.1.2": {
@@ -1148,6 +1236,50 @@
       "java": {
         "component": "java-runtime-epsilon",
         "majorVersion": 25
+      },
+      "alternatives": {
+        "xaeros-minimap": [
+          {
+            "version": "fabric-26.1.2-26.5.0",
+            "filename": "xaerominimap-fabric-26.1.2-26.5.0.jar",
+            "url": "https://cdn.modrinth.com/data/1bokaNcj/versions/kWf58HtH/xaerominimap-fabric-26.1.2-26.5.0.jar",
+            "sha512": "5faeb5fad6059d7d7a4d2c8159ecf8e641700ea09652e6a01fcc9e3498654ba5aa778648d57cdd96c04dabe1aa80f2699490facaf67f8f8ada0afe86c74a00e2"
+          },
+          {
+            "version": "fabric-26.1.2-26.4.2",
+            "filename": "xaerominimap-fabric-26.1.2-26.4.2.jar",
+            "url": "https://cdn.modrinth.com/data/1bokaNcj/versions/fklv23QW/xaerominimap-fabric-26.1.2-26.4.2.jar",
+            "sha512": "e11634beba35c11c10c887b695769e54c2e04ad15b7c98c6342bdcb8aaaf85b7be29d465ade83172a99cc7bb36ea9ecd48e6fbaf4a8baf7cd615669c4beb46b0"
+          }
+        ],
+        "fabric-api": [
+          {
+            "version": "0.155.2+26.1.2",
+            "filename": "fabric-api-0.155.2+26.1.2.jar",
+            "url": "https://cdn.modrinth.com/data/P7dR8mSH/versions/uLkEd5dr/fabric-api-0.155.2%2B26.1.2.jar",
+            "sha512": "e07d2e525037e3ce2d6fa18ddc9d4970263a85fd0718fdbd41a1a42c93ec861307d0f5d1461f020ff941bdd5b981a82b5717ee2d6b5c400124bf0171fb21e998"
+          },
+          {
+            "version": "0.155.0+26.1.2",
+            "filename": "fabric-api-0.155.0+26.1.2.jar",
+            "url": "https://cdn.modrinth.com/data/P7dR8mSH/versions/v0WpqBBM/fabric-api-0.155.0%2B26.1.2.jar",
+            "sha512": "e0dcf7e461de2ce62951e40769348be88b965e6a50b0ebd08df10c94e5e85102c30c5298f18a691c4224299fa1112f101ddaee755c4213de6d01019cb670e903"
+          }
+        ],
+        "xaeros-world-map": [
+          {
+            "version": "fabric-26.1.2-1.46.0",
+            "filename": "xaeroworldmap-fabric-26.1.2-1.46.0.jar",
+            "url": "https://cdn.modrinth.com/data/NcUtCpym/versions/IYPINJuw/xaeroworldmap-fabric-26.1.2-1.46.0.jar",
+            "sha512": "335df414f19c2675ad9a245fc12069ea65cab38c09610e53fed179c3f8f314a14f917c9b66bd17ff502d47697751ba20e7bb705587b47850173bffa9a8776b18"
+          },
+          {
+            "version": "fabric-26.1.2-1.45.0",
+            "filename": "xaeroworldmap-fabric-26.1.2-1.45.0.jar",
+            "url": "https://cdn.modrinth.com/data/NcUtCpym/versions/BzCXHIwa/xaeroworldmap-fabric-26.1.2-1.45.0.jar",
+            "sha512": "4fc4a297a65c1508fb1477682a0a1664a16abfc81067416e9bda22751ad481699b7fc5b568e8da6fb730bfe86148c503998525d1e20f36222e842216b53dc5cf"
+          }
+        ]
       }
     }
   },

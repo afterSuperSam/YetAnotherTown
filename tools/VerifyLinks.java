@@ -22,14 +22,18 @@ public final class VerifyLinks {
     private int references;
 
     public static void main(String[] arguments) throws Exception {
-        if (arguments.length != 3) throw new IllegalArgumentException("Expected: mod.jar package-prefix classpath-lines.txt");
-        VerifyLinks verifier = new VerifyLinks();
-        try {
-            verifier.archives.add(new ZipFile(arguments[0]));
-            for (String jar : Files.readAllLines(Path.of(arguments[2]))) if (!jar.isBlank()) verifier.archives.add(new ZipFile(jar));
-            verifier.verify(arguments[1].replace('.', '/'));
-        } finally {
-            for (ZipFile archive : verifier.archives) archive.close();
+        if (arguments.length < 3) throw new IllegalArgumentException("Expected: mod.jar package-prefix classpath-lines.txt...");
+        for (int index = 2; index < arguments.length; index++) {
+            VerifyLinks verifier = new VerifyLinks();
+            try {
+                verifier.archives.add(new ZipFile(arguments[0]));
+                for (String jar : Files.readAllLines(Path.of(arguments[index]))) if (!jar.isBlank()) verifier.archives.add(new ZipFile(jar));
+                verifier.verify(arguments[1].replace('.', '/'));
+            } catch (IllegalStateException exception) {
+                throw new IllegalStateException("Compatibility failed: " + Path.of(arguments[index]).getFileName() + "\n" + exception.getMessage(), exception);
+            } finally {
+                for (ZipFile archive : verifier.archives) archive.close();
+            }
         }
     }
 
