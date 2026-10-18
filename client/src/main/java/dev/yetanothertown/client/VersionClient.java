@@ -166,10 +166,11 @@ public final class VersionClient {
         if (minecraft.player == null || connectingIdentity) return;
         connectingIdentity = true;
         nextIdentityAttempt = System.nanoTime() + TownGateway.get().config().pollIntervalSeconds * 1_000_000_000L;
+        String identity = playerId() + ":" + playerName();
         TownGateway.get().login(playerId(), playerName()).whenComplete((result, failure) -> minecraft.execute(() -> {
             connectingIdentity = false;
-            if (failure == null) {
-                if (TownGateway.get().towns.size() > 0) TownGateway.get().selectTown(TownGateway.get().towns.get(0).getAsJsonObject().get("id").getAsString());
+            if (failure == null && minecraft.player != null && identity.equals(playerId() + ":" + playerName()) && TownGateway.get().loggedIn()) {
+                if (TownGateway.get().townId.isEmpty() && TownGateway.get().towns.size() > 0) TownGateway.get().selectTown(TownGateway.get().towns.get(0).getAsJsonObject().get("id").getAsString());
                 success.run();
             }
         }));

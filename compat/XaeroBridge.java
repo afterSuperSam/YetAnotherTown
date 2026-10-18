@@ -44,7 +44,7 @@ public final class XaeroBridge {
 
     public static String currentMapKey() {
         MapProcessor processor = processor();
-        if (processor == null || processor.getMapWorld() == null) return "";
+        if (processor == null || processor.getMapWorld() == null || processor.getMapWorld().getMainId() == null || processor.getMapWorld().getCurrentMultiworld() == null) return "";
         MapWorld world = processor.getMapWorld();
         return world.getMainId() + "|" + world.getCurrentMultiworld();
     }
@@ -59,8 +59,9 @@ public final class XaeroBridge {
         MapProcessor processor = processor();
         if (world.isEmpty() || archived(world) || processor == null || !processor.isMapWorldUsable()) return false;
         MapWorld mapWorld = processor.getMapWorld();
+        if (mapWorld == null) return false;
         MapConnectionNode playerMap = mapWorld.getPlayerMapKey();
-        return playerMap != null && TownGateway.get().getBoundMapKey(playerMap.getDimId().identifier().toString()).equals(mapWorld.getMainId() + "|" + playerMap.getMw());
+        return playerMap != null && playerMap.getDimId() != null && TownGateway.get().getBoundMapKey(playerMap.getDimId().identifier().toString()).equals(mapWorld.getMainId() + "|" + playerMap.getMw());
     }
 
     public static boolean openMap(Screen returnTo, Consumer<JsonObject> chunkSelection) {
@@ -75,7 +76,7 @@ public final class XaeroBridge {
         String[] identity = gateway.getBoundMapKey(currentMapDimension()).split("\\|", 2);
         MapWorld mapWorld = processor.getMapWorld();
         MapDimension dimension = mapWorld.getCurrentDimension();
-        if (identity.length != 2 || !identity[0].equals(mapWorld.getMainId()) || !dimension.getMultiworldIdsCopy().contains(identity[1])) {
+        if (world.isEmpty() || dimension == null || identity.length != 2 || !identity[0].equals(mapWorld.getMainId()) || !dimension.getMultiworldIdsCopy().contains(identity[1])) {
             gateway.status = "本地未绑定或缺少此周目的当前维度底图；请在 Xaero 中选择对应已保存实例，再到世界详情绑定个人地图";
             return false;
         }
@@ -149,7 +150,9 @@ public final class XaeroBridge {
         private record MapState(String selection, boolean writable) { }
         private final Map<MapDimension, MapState> originalMaps = new HashMap<>();
         private final ResourceKey<Level> originalCustomDimension;
+        private final MapWorld originalMapWorld;
         private final boolean historical;
+        private final TownGateway.Context context;
         private Button confirm;
         private boolean dragging;
         private boolean selected;
@@ -162,8 +165,10 @@ public final class XaeroBridge {
             super(returnTo, returnTo, processor, Minecraft.getInstance().player);
             this.returnTo = returnTo;
             this.selection = selection;
+            context = TownGateway.get().context();
             cameraX = field("cameraX"); cameraZ = field("cameraZ"); scale = field("scale");
-            originalCustomDimension = processor.getMapWorld().getCustomDimensionId();
+            originalMapWorld = processor.getMapWorld();
+            originalCustomDimension = originalMapWorld.getCustomDimensionId();
             historical = !processor.getMapWorld().getCurrentMultiworld().equals(multiworld) || archived(selectedWorld());
         }
         private static Field field(String name) throws ReflectiveOperationException {
@@ -199,11 +204,13 @@ public final class XaeroBridge {
             try {
                 if (writerPaused) {
                     synchronized (getMapProcessor()) {
+                        if (getMapProcessor().getMapWorld() == originalMapWorld) {
                         for (var entry : originalMaps.entrySet()) {
                             getMapProcessor().setMultiworld(entry.getKey(), entry.getValue().selection());
                             entry.getKey().futureMultiworldWritable = entry.getValue().writable();
                         }
-                        getMapProcessor().getMapWorld().setCustomDimensionId(originalCustomDimension);
+                        originalMapWorld.setCustomDimensionId(originalCustomDimension);
+                        }
                     }
                     originalMaps.clear();
                 }
@@ -213,10 +220,15 @@ public final class XaeroBridge {
             }
         }
         private boolean matchingMap() {
+            if (!sameSelection()) return false;
             String bound = TownGateway.get().getBoundMapKey(currentMapDimension());
             return !bound.isEmpty() && bound.equals(currentMapKey());
         }
+        private boolean sameSelection() {
+            return TownGateway.get().isCurrent(context) && getMapProcessor().getMapWorld() == originalMapWorld;
+        }
         private void bindViewedDimension() {
+            if (!sameSelection()) return;
             MapWorld world = getMapProcessor().getMapWorld();
             MapDimension dimension = world.getCurrentDimension();
             if (dimension == null) return;
@@ -253,7 +265,7 @@ public final class XaeroBridge {
         @Override public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
             bindViewedDimension();
             super.extractRenderState(graphics, mouseX, mouseY, delta);
-            String dimension = getMapProcessor().getMapWorld().getCurrentDimensionId().identifier().toString();
+            String dimension = currentMapDimension();
             if (!dimension.equals(viewedDimension)) { selected = false; dragging = false; viewedDimension = dimension; }
             boolean matching = matchingMap();
             if (confirm != null) confirm.active = selected && matching;

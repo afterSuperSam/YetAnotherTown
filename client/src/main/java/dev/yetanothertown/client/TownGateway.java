@@ -30,6 +30,7 @@ public final class TownGateway {
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private final AtomicLong selection = new AtomicLong();
     private final AtomicLong authentication = new AtomicLong();
+    private final AtomicLong snapshots = new AtomicLong();
     private volatile String token = "";
     private volatile JsonObject player = new JsonObject();
     private volatile ClientConfig configuration = new ClientConfig();
@@ -46,6 +47,17 @@ public final class TownGateway {
     public ClientConfig config() { return configuration; }
     public JsonObject player() { return player.deepCopy(); }
     public boolean loggedIn() { return !token.isEmpty(); }
+
+    public record Context(long authentication, long selection, String endpoint) { }
+
+    public synchronized Context context() {
+        return new Context(authentication.get(), selection.get(), configuration.endpoint);
+    }
+
+    public synchronized boolean isCurrent(Context context) {
+        return context.authentication() == authentication.get() && context.selection() == selection.get()
+                && context.endpoint().equals(configuration.endpoint);
+    }
 
     public synchronized void initialize(Path directory) {
         configurationPath = directory.resolve("yetanothertown.json");
@@ -177,26 +189,28 @@ public final class TownGateway {
         }
     }
 
-    public CompletableFuture<JsonObject> login(String playerId, String name) {
+    public synchronized CompletableFuture<JsonObject> login(String playerId, String name) {
         long attempt = authentication.incrementAndGet();
         status = "正在使用当前游戏身份连接…";
         return request("auth.login", object("playerId", playerId, "name", name)).thenCompose(result -> {
-            requireAttempt(attempt);
-            token = result.get("token").getAsString();
-            player = result.getAsJsonObject("player");
-            status = "已连接当前游戏身份";
-            return refreshTowns().thenApply(ignored -> result);
-        }).exceptionallyCompose(exception -> failed(exception, "连接游戏身份失败，请检查小镇服务"));
+            synchronized (this) {
+                requireAttempt(attempt);
+                token = result.get("token").getAsString();
+                player = result.getAsJsonObject("player");
+                status = "已连接当前游戏身份";
+            }
+            return refreshTowns().thenApply(ignored -> { requireAttempt(attempt); return result; });
+        }).exceptionallyCompose(exception -> failed(exception, "连接游戏身份失败，请检查小镇服务", attempt));
     }
 
-    public void logout() {
+    public synchronized void logout() {
         String previousToken = token;
         String previousEndpoint = configuration.endpoint;
         clearSession("已退出平台登录");
         revoke(previousEndpoint, previousToken);
     }
 
-    private void clearSession(String message) {
+    private synchronized void clearSession(String message) {
         authentication.incrementAndGet();
         token = "";
         player = new JsonObject();
@@ -223,9 +237,11 @@ public final class TownGateway {
         });
     }
 
-    public CompletableFuture<JsonObject> request(String action, JsonObject payload) {
+    public synchronized CompletableFuture<JsonObject> request(String action, JsonObject payload) {
         String endpoint = configuration.endpoint;
         String bearer = token;
+        long revision = authentication.get();
+        long selectedRevision = selection.get();
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(endpoint + "/api"))
                 .timeout(Duration.ofSeconds(20)).header("Content-Type", "application/json; charset=utf-8")
                 .POST(HttpRequest.BodyPublishers.ofString(JSON.toJson(object("action", action, "payload", payload))));
@@ -239,52 +255,66 @@ public final class TownGateway {
             if (!envelope.get("ok").getAsBoolean()) {
                 JsonObject error = envelope.getAsJsonObject("error");
                 String message = error != null && error.has("message") ? error.get("message").getAsString() : "服务请求失败";
-                if (response.statusCode() == 401 && !action.startsWith("auth.") && token.equals(bearer)) clearSession(message);
+                synchronized (this) {
+                    if (response.statusCode() == 401 && !action.startsWith("auth.") && authentication.get() == revision && token.equals(bearer)) clearSession(message);
+                }
                 throw new CompletionException(new ServiceException(message));
             }
             JsonElement data = envelope.get("data");
             if (data != null && data.isJsonObject()) return data.getAsJsonObject();
             return object("items", data == null ? new JsonArray() : data);
-        }).exceptionallyCompose(exception -> failed(exception, "连接服务失败，请检查地址和服务状态"));
+        }).exceptionallyCompose(exception -> failed(exception, "连接服务失败，请检查地址和服务状态", revision, selectedRevision));
     }
 
-    private <T> CompletableFuture<T> failed(Throwable exception, String fallback) {
+    private <T> CompletableFuture<T> failed(Throwable exception, String fallback, long revision) {
+        return failed(exception, fallback, revision, null);
+    }
+
+    private synchronized <T> CompletableFuture<T> failed(Throwable exception, String fallback, long revision, Long selectedRevision) {
         Throwable cause = exception;
         while (cause.getCause() != null && cause instanceof CompletionException) cause = cause.getCause();
-        status = cause instanceof ServiceException ? cause.getMessage() : fallback;
+        if (authentication.get() == revision && (selectedRevision == null || selection.get() == selectedRevision)) status = cause instanceof ServiceException ? cause.getMessage() : fallback;
         LOGGER.log(System.Logger.Level.WARNING, "Town service request failed: " + cause.getClass().getSimpleName());
         return CompletableFuture.failedFuture(cause);
     }
 
     public CompletableFuture<JsonObject> refreshTowns() {
-        long revision = selection.get();
+        long revision = authentication.get();
         return request("town.list", object()).thenApply(result -> {
-            if (selection.get() == revision && result.has("items")) towns = result.getAsJsonArray("items");
+            synchronized (this) {
+                if (authentication.get() == revision && result.has("items")) towns = result.getAsJsonArray("items");
+            }
             return result;
         });
     }
 
-    public CompletableFuture<JsonObject> refresh() {
+    public synchronized CompletableFuture<JsonObject> refresh() {
         String selectedTown = townId;
         String selectedWorld = worldId;
         long revision = selection.get();
+        long requestRevision = snapshots.incrementAndGet();
         if (selectedTown.isEmpty()) return CompletableFuture.completedFuture(snapshot);
         return request("town.snapshot", object("townId", selectedTown, "worldId", selectedWorld)).thenCompose(result -> {
-            if (selection.get() != revision || !townId.equals(selectedTown) || !worldId.equals(selectedWorld)) return CompletableFuture.completedFuture(result);
-            if (selectedWorld.isEmpty() && result.has("worlds")) {
-                for (JsonElement element : result.getAsJsonArray("worlds")) {
-                    JsonObject world = element.getAsJsonObject();
-                    if (!world.get("archived").getAsBoolean()) { worldId = world.get("id").getAsString(); break; }
+            synchronized (this) {
+                if (snapshots.get() != requestRevision || selection.get() != revision || !townId.equals(selectedTown) || !worldId.equals(selectedWorld)) return CompletableFuture.completedFuture(result);
+                if (selectedWorld.isEmpty() && result.has("worlds")) {
+                    for (JsonElement element : result.getAsJsonArray("worlds")) {
+                        JsonObject world = element.getAsJsonObject();
+                        if (!world.get("archived").getAsBoolean()) { worldId = world.get("id").getAsString(); break; }
+                    }
+                    if (worldId.isEmpty() && !result.getAsJsonArray("worlds").isEmpty()) worldId = result.getAsJsonArray("worlds").get(0).getAsJsonObject().get("id").getAsString();
+                    if (!worldId.isEmpty()) {
+                        selection.incrementAndGet();
+                        return refresh();
+                    }
                 }
-                if (worldId.isEmpty() && !result.getAsJsonArray("worlds").isEmpty()) worldId = result.getAsJsonArray("worlds").get(0).getAsJsonObject().get("id").getAsString();
-                if (!worldId.isEmpty()) return refresh();
+                snapshot = result;
+                return CompletableFuture.completedFuture(result);
             }
-            snapshot = result;
-            return CompletableFuture.completedFuture(result);
         });
     }
 
-    public void selectTown(String id) {
+    public synchronized void selectTown(String id) {
         selection.incrementAndGet();
         townId = id;
         worldId = "";
@@ -292,7 +322,7 @@ public final class TownGateway {
         refresh();
     }
 
-    public void selectWorld(String id) {
+    public synchronized void selectWorld(String id) {
         selection.incrementAndGet();
         worldId = id;
         snapshot = new JsonObject();

@@ -104,12 +104,12 @@ final class TownStyle {
         return "Yet Another Town" + (name.isBlank() ? "" : " · " + name);
     }
 
-    static Button button(String label, int x, int y, int width, Runnable action, boolean primary) {
+    static Button button(String label, int x, int y, int width, Runnable action) {
         return Button.builder(Component.literal(label), ignored -> action.run()).bounds(x, y, Math.max(18, width), 20).build();
     }
 
     static Button tab(String label, int x, int y, int width, Runnable action, boolean selected) {
-        Button tab = button(label, x, y, width, action, false);
+        Button tab = button(label, x, y, width, action);
         if (selected) tab.setMessage(Component.literal(label).withStyle(net.minecraft.ChatFormatting.YELLOW));
         return tab;
     }

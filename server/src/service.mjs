@@ -106,15 +106,17 @@ export class JsonStore {
     if (state.version === 1) {
       for (const town of Object.values(state.towns)) {
         // 旧功能原样留档；组内留言不自动公开给全镇。
-        town.legacy = { projects: clone(town.projects), privateMessages: town.messages.filter(message => message.visibility === 'project'), tickets: town.tickets.filter(ticket => !town.projects.some(project => project.id === ticket.projectId)) };
+        const migratableTicket = ticket => town.projects.some(project => project.id === ticket.projectId && project.worldId === ticket.worldId && project.dimension === ticket.dimension && ['completed', 'maintenance'].includes(project.status)) && ['open', 'working', 'resolved'].includes(ticket.status);
+        town.legacy = { projects: clone(town.projects), privateMessages: town.messages.filter(message => message.visibility === 'project'), tickets: town.tickets.filter(ticket => !migratableTicket(ticket)) };
         for (const key of ['tasks', 'materials', 'pledges', 'facilities']) { town.legacy[key] = town[key] ?? []; delete town[key]; }
         town.messages = town.messages.filter(message => message.visibility !== 'project').map(({ visibility, ...message }) => message);
-        town.tickets = town.tickets.filter(ticket => town.projects.some(project => project.id === ticket.projectId));
+        town.tickets = town.tickets.filter(migratableTicket);
         for (const project of town.projects) {
           delete project.memberIds; delete project.expectedAt;
           delete project.reviewReason; delete project.reviewedBy; delete project.reviewedAt;
           project.status = ['pending', 'rejected'].includes(project.status) ? 'planned' : project.status === 'review' ? 'active' : project.status;
           if (project.status === 'completed' && town.tickets.some(ticket => ticket.projectId === project.id && ticket.status !== 'resolved')) project.status = 'maintenance';
+          if (project.status === 'maintenance' && !town.tickets.some(ticket => ticket.projectId === project.id && ticket.status !== 'resolved')) project.status = 'completed';
         }
         for (const role of town.roles) role.permissions = role.permissions.filter(permission => Object.hasOwn(PERMISSIONS, permission));
       }
@@ -254,8 +256,7 @@ export class TownService {
     };
     const writable = entity => { writableWorld(entity.worldId); return entity; };
     const manageProject = project => {
-      requirePermission('project.edit');
-      check(project.leaderId === player.id || has('project.approve'), 'forbidden', '只有负责人或管理可以维护此工程');
+      check(has('project.approve') || has('project.edit') && project.leaderId === player.id, 'forbidden', '只有负责人或管理可以维护此工程');
     };
     const projectWritable = id => writable(find('projects', id));
     const position = values => {
@@ -310,6 +311,7 @@ export class TownService {
       requirePermission('roles.manage');
       const existing = payload.id ? find('roles') : null;
       check(!existing || !['mayor', 'newcomer'].includes(existing.id), 'forbidden', '镇长与新人权限组不可修改');
+      if (existing && town.members.some(member => member.roleId === existing.id && member.playerId !== player.id)) requirePermission('members.manage');
       check(Array.isArray(payload.permissions), 'invalid_argument', '权限列表无效');
       for (const permission of payload.permissions) check(typeof permission === 'string' && permission in PERMISSIONS && has(permission), 'forbidden', '不能授予自己没有的权限');
       if (existing) for (const permission of existing.permissions) check(has(permission), 'forbidden', '不能管理高于自己的权限组');
@@ -338,7 +340,7 @@ export class TownService {
         target.roleId = role.id;
       } else {
         const currentWorld = id => !find('worlds', id).archived;
-        check(!town.projects.some(project => currentWorld(project.worldId) && project.leaderId === target.playerId && project.status !== 'completed'), 'conflict', '该成员仍负责未完成工程，请先移交工程');
+        check(!town.projects.some(project => currentWorld(project.worldId) && project.leaderId === target.playerId), 'conflict', '该成员仍负责当前周目的工程，请先移交负责人（包括已完工工程）');
         town.members = town.members.filter(item => item.playerId !== target.playerId);
       }
       return done({});

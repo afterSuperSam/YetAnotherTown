@@ -148,6 +148,32 @@ test('自定义权限组可新增、更新和删除；有成员时不能删除',
   assert.equal((await f.snapshot()).roles.some(item => item.id === role.id), false);
 });
 
+test('编辑他人已使用权限组必须同时具备成员管理权限', async t => {
+  const f = await fixture(t); const bob = await f.join(); const carol = await f.join('Carol');
+  const editor = await f.call('role.save', { townId: f.townId, name: '权限维护', permissions: ['roles.manage', 'project.edit'] });
+  const builders = await f.call('role.save', { townId: f.townId, name: '建设员', permissions: ['project.edit'] });
+  await f.call('member.role', { townId: f.townId, playerId: bob.player.id, roleId: editor.id });
+  await f.call('member.role', { townId: f.townId, playerId: carol.player.id, roleId: builders.id });
+  await rejects(f.call('role.save', { townId: f.townId, id: builders.id, name: '被降权', permissions: [] }, bob.token), 'forbidden');
+  assert.deepEqual((await f.snapshot()).roles.find(role => role.id === builders.id).permissions, ['project.edit']);
+  await f.call('role.save', { townId: f.townId, id: editor.id, name: '权限维护', permissions: ['roles.manage', 'members.manage', 'project.edit'] });
+  await f.call('role.save', { townId: f.townId, id: builders.id, name: '建设员', permissions: [] }, bob.token);
+  assert.deepEqual((await f.snapshot()).roles.find(role => role.id === builders.id).permissions, []);
+});
+
+test('全局工程管理权限可独立维护工程和维修工单', async t => {
+  const f = await fixture(t); const bob = await f.join();
+  const role = await f.call('role.save', { townId: f.townId, name: '工程管理', permissions: ['project.approve'] });
+  await f.call('member.role', { townId: f.townId, playerId: bob.player.id, roleId: role.id });
+  const project = await f.project();
+  await f.call('project.update', { townId: f.townId, id: project.id, name: '新车站' }, bob.token);
+  await f.call('project.status', { townId: f.townId, id: project.id, status: 'active' }, bob.token);
+  await f.call('project.status', { townId: f.townId, id: project.id, status: 'completed' }, bob.token);
+  const ticket = await f.call('ticket.create', { townId: f.townId, projectId: project.id, ...position, title: '维修' });
+  await f.call('ticket.update', { townId: f.townId, id: ticket.id, status: 'resolved', resolution: '恢复' }, bob.token);
+  assert.equal((await f.snapshot()).projects[0].status, 'completed');
+});
+
 test('计划占区、开工、完工及区块重叠验证', async t => {
   const f = await fixture(t);
   await rejects(f.project({ chunks: { minX: 2, maxX: 1, minZ: 0, maxZ: 1 } }), 'invalid_argument');
@@ -221,6 +247,7 @@ test('旧版数据迁移保留旧业务与私密留言，不对外泄露存档',
   const town = legacy.towns[f.townId];
   town.tasks = [{ id: 'old-task' }]; town.materials = []; town.pledges = []; town.facilities = [{ id: 'old-facility' }];
   town.projects[0].status = 'pending'; town.projects[0].memberIds = [f.alice.player.id]; town.projects[0].expectedAt = '2026-11-01';
+  town.tickets.push({ id: 'invalid-ticket', projectId: project.id, worldId: 'other-world', ...position, status: 'open' });
   town.messages.push({ id: 'private', worldId: f.worldId, projectId: project.id, visibility: 'project', text: '旧组内内容' });
   town.roles[1].permissions.push('task.claim');
   await writeFile(f.store.file, JSON.stringify(legacy));
@@ -229,6 +256,7 @@ test('旧版数据迁移保留旧业务与私密留言，不对外泄露存档',
   assert.equal(snapshot.projects[0].status, 'planned');
   assert.equal(snapshot.projects[0].expectedAt, undefined); assert.equal(snapshot.projects[0].memberIds, undefined);
   assert.equal(snapshot.messages.length, 0); assert.equal(snapshot.town.legacy, undefined);
+  assert.equal(snapshot.tickets.length, 0);
   assert.equal(JSON.stringify(snapshot).includes('old-task'), false);
   assert.equal((await service.handle('town.list', {}, f.alice.token))[0].legacy, undefined);
   await service.handle('town.update', { townId: f.townId, name: '保留存档' }, f.alice.token);
@@ -236,6 +264,7 @@ test('旧版数据迁移保留旧业务与私密留言，不对外泄露存档',
   assert.equal(saved.version, 2); assert.equal(saved.towns[f.townId].legacy.tasks[0].id, 'old-task');
   assert.equal(saved.towns[f.townId].legacy.privateMessages[0].text, '旧组内内容');
   assert.equal(saved.towns[f.townId].legacy.projects[0].expectedAt, '2026-11-01');
+  assert.equal(saved.towns[f.townId].legacy.tickets[0].id, 'invalid-ticket');
   const second = await new TownService({ store: f.store }).initialize();
   assert.equal(second.state.towns[f.townId].legacy.tasks.length, 1);
 });
@@ -247,6 +276,10 @@ test('不同小镇不能引用彼此数据，移除工程负责人前必须完�
   const { townId: otherTown } = await f.call('town.create', { name: '外部小镇' });
   await rejects(f.call('project.update', { townId: otherTown, id: project.id, name: '跨镇' }), 'not_found');
   await rejects(f.call('member.remove', { townId: f.townId, playerId: bob.player.id }), 'conflict');
+  await f.call('project.status', { townId: f.townId, id: project.id, status: 'active' }, bob.token);
+  await f.call('project.status', { townId: f.townId, id: project.id, status: 'completed' }, bob.token);
+  await rejects(f.call('member.remove', { townId: f.townId, playerId: bob.player.id }), 'conflict');
+  assert.equal((await f.snapshot()).projects.find(item => item.id === project.id).leaderId, bob.player.id);
   await f.call('project.update', { townId: f.townId, id: project.id, leaderId: f.alice.player.id });
   await f.call('member.remove', { townId: f.townId, playerId: bob.player.id });
   await rejects(f.call('town.snapshot', { townId: f.townId }, bob.token), 'forbidden');
@@ -289,7 +322,7 @@ test('HTTP 封装、请求格式、认证、请求大小及真实接口交互', 
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const endpoint = `http://127.0.0.1:${server.address().port}`;
   const request = (body, headers = {}) => fetch(`${endpoint}/api`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body });
-  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.2');
+  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.3');
   assert.equal((await request('{broken')).status, 400);
   assert.equal((await request('[]')).status, 400);
   assert.equal((await request(JSON.stringify({ action: 'town.list' }))).status, 401);

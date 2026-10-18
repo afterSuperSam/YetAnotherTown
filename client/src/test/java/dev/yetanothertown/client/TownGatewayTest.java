@@ -40,6 +40,9 @@ public final class TownGatewayTest {
         AtomicReference<String> authorization = new AtomicReference<>("");
         CountDownLatch slowStarted = new CountDownLatch(1);
         CountDownLatch slowRelease = new CountDownLatch(1);
+        CountDownLatch refreshStarted = new CountDownLatch(1);
+        CountDownLatch refreshRelease = new CountDownLatch(1);
+        var refreshCount = new java.util.concurrent.atomic.AtomicInteger();
         CountDownLatch revoked = new CountDownLatch(1);
         CountDownLatch loginStarted = new CountDownLatch(1);
         CountDownLatch loginRelease = new CountDownLatch(1);
@@ -73,7 +76,14 @@ public final class TownGatewayTest {
                         try { slowRelease.await(5, TimeUnit.SECONDS); }
                         catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
                     }
-                    body = "{\"ok\":true,\"data\":{\"town\":{\"id\":\"" + town + "\"},\"worlds\":[]}}";
+                    if (town.equals("same") && refreshCount.incrementAndGet() == 1) {
+                        refreshStarted.countDown();
+                        try { refreshRelease.await(5, TimeUnit.SECONDS); }
+                        catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
+                        town = "outdated";
+                    }
+                    String worlds = town.equals("automatic") ? "[{\"id\":\"" + "c".repeat(24) + "\",\"archived\":false}]" : "[]";
+                    body = "{\"ok\":true,\"data\":{\"town\":{\"id\":\"" + town + "\"},\"worlds\":" + worlds + "}}";
                 }
                 case "denied" -> { status = 403; body = "{\"ok\":false,\"error\":{\"code\":\"FORBIDDEN\",\"message\":\"没有操作权限\"}}"; }
                 case "expired" -> { status = 401; body = "{\"ok\":false,\"error\":{\"code\":\"unauthenticated\",\"message\":\"登录已过期\"}}"; }
@@ -120,7 +130,9 @@ public final class TownGatewayTest {
             require(gateway.loggedIn() && gateway.player().get("name").getAsString().equals("Sam"), "current game identity retained");
             require(gateway.towns.size() == 1, "array envelope populates town list");
             require("Bearer test-token".equals(authorization.get()), "subsequent requests use session token");
+            TownGateway.Context connectedContext = gateway.context();
             gateway.configure(endpoint, 64, 5, false);
+            require(gateway.isCurrent(connectedContext), "visual settings preserve operation context");
             require(gateway.loggedIn(), "visual and polling settings do not log out the player");
             require(gateway.config().nearbyRadius == 64 && gateway.config().pollIntervalSeconds == 5 && !gateway.config().animationEnabled, "configuration screen settings are applied");
             require(Files.readString(directory.resolve("yetanothertown.json")).contains("personal-server|first"), "saving settings retains personal map bindings");
@@ -133,12 +145,28 @@ public final class TownGatewayTest {
             require(gateway.status.equals("服务返回格式错误"), "invalid protocol explicitly classified");
             gateway.selectTown("slow");
             require(slowStarted.await(5, TimeUnit.SECONDS), "old response is in flight");
+            TownGateway.Context previousSelection = gateway.context();
             gateway.selectTown("fast");
+            require(!gateway.isCurrent(previousSelection), "town switching invalidates pending screen operations");
             gateway.refresh().get(5, TimeUnit.SECONDS);
             slowRelease.countDown();
             gateway.request("noop", TownGateway.object()).get(5, TimeUnit.SECONDS);
             require(gateway.snapshot.getAsJsonObject("town").get("id").getAsString().equals("fast"), "old town response cannot overwrite selection");
+            gateway.townId = "automatic";
+            gateway.worldId = "";
+            TownGateway.Context beforeAutomaticWorld = gateway.context();
+            gateway.refresh().get(5, TimeUnit.SECONDS);
+            require(!gateway.isCurrent(beforeAutomaticWorld) && gateway.worldId.equals("c".repeat(24)), "automatic world selection invalidates the previous operation context");
+            gateway.townId = "same";
+            CompletableFuture<JsonObject> oldRefresh = gateway.refresh();
+            require(refreshStarted.await(5, TimeUnit.SECONDS), "same selection refresh is in flight");
+            gateway.refresh().get(5, TimeUnit.SECONDS);
+            refreshRelease.countDown();
+            oldRefresh.get(5, TimeUnit.SECONDS);
+            require(gateway.snapshot.getAsJsonObject("town").get("id").getAsString().equals("same"), "older refresh cannot overwrite a newer snapshot of the same selection");
+            TownGateway.Context previousSession = gateway.context();
             gateway.request("expired", TownGateway.object()).handle((value, error) -> null).join();
+            require(!gateway.isCurrent(previousSession), "session expiry invalidates pending screen operations");
             require(!gateway.loggedIn() && gateway.towns.isEmpty() && gateway.snapshot.isEmpty() && gateway.player().isEmpty(), "expired session clears private cached data");
             require(gateway.status.equals("登录已过期"), "expired session preserves visible error");
             gateway.login(playerId, "Sam").get(5, TimeUnit.SECONDS);
@@ -152,6 +180,7 @@ public final class TownGatewayTest {
             require(!Files.readString(directory.resolve("yetanothertown.json")).contains("test-token"), "session token never persisted");
         } finally {
             slowRelease.countDown();
+            refreshRelease.countDown();
             loginRelease.countDown();
             server.stop(0);
             executor.close();
