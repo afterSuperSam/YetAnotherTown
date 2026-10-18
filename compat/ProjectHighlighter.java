@@ -6,7 +6,15 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.ToIntFunction;
 import net.minecraft.network.chat.Component;
+import java.lang.reflect.Field;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.AbstractWidget;
+import net.minecraft.client.gui.screens.inventory.tooltip.TooltipRenderUtil;
+import xaero.map.gui.GuiMap;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 import xaero.map.MapProcessor;
@@ -19,7 +27,7 @@ import static dev.yetanothertown.client.TownScreen.*;
 
 /** 将小镇区块交给 Xaero 的底图纹理管线，并为原生悬浮提示提供资料。 */
 final class ProjectHighlighter extends ChunkHighlighter {
-    private record Area(String dimension, int minX, int maxX, int minZ, int maxZ, int color, String name, String tooltip) {
+    private record Area(String dimension, int minX, int maxX, int minZ, int maxZ, int color, String name, String leaderId, String leaderName, String type, String introduction, String status) {
         boolean contains(int x, int z) { return x >= minX && x <= maxX && z >= minZ && z <= maxZ; }
         boolean touchesRegion(int x, int z) { return intersects(minX, maxX, minZ, maxZ, x << 5, (x << 5) + 31, z << 5, (z << 5) + 31); }
         boolean samePaint(Area other) {
@@ -33,6 +41,8 @@ final class ProjectHighlighter extends ChunkHighlighter {
     }
     private record Overlay(MapWorld world, HighlighterRegistry registry, JsonObject snapshot, TownGateway.Context context, String worldId, boolean enabled,
                            Map<String, String> bindings, Map<String, String> viewedMaps, List<Area> areas) { }
+    static final int AVATAR_SIZE = 24;
+    static final int OWNER_TEXT_OFFSET = 28;
     private static volatile Overlay overlay;
     private final HighlighterRegistry registry;
 
@@ -79,11 +89,8 @@ final class ProjectHighlighter extends ChunkHighlighter {
             String type = switch (stringValue(project, "type")) { case "building" -> "建筑"; case "machine" -> "机器"; default -> "其他"; };
             String introduction = stringValue(project, "purpose");
             if (!stringValue(project, "notes").isBlank()) introduction += (introduction.isBlank() ? "" : " / ") + stringValue(project, "notes");
-            String tooltip = name + "\n建设者：" + (leaderName.isBlank() ? "未指定" : leaderName) + "\n类型：" + type
-                    + "\n简介：" + (introduction.isBlank() ? "暂无简介" : summary(introduction, 100))
-                    + (status.equals("completed") ? "" : "\n状态：" + state(status)) + "\n右键查看工程详情";
             int color = switch (status) { case "planned" -> 0xDAB75C; case "active" -> 0xE49754; case "maintenance" -> 0xDF9481; case "completed" -> 0x73BC78; default -> 0x999999; };
-            areas.add(new Area(stringValue(project, "dimension"), integer(chunks, "minX"), integer(chunks, "maxX"), integer(chunks, "minZ"), integer(chunks, "maxZ"), color, name, tooltip));
+            areas.add(new Area(stringValue(project, "dimension"), integer(chunks, "minX"), integer(chunks, "maxX"), integer(chunks, "minZ"), integer(chunks, "maxZ"), color, name, leader, leaderName.isBlank() ? "未指定" : leaderName, type, introduction.isBlank() ? "暂无简介" : introduction, status));
         }
         Overlay updated = new Overlay(world, nativeRegistry, snapshot, context, gateway.worldId, enabled, Map.copyOf(bindings), Map.copyOf(viewedMaps), List.copyOf(areas));
         overlay = updated;
@@ -94,7 +101,9 @@ final class ProjectHighlighter extends ChunkHighlighter {
         if (world != null && repaint) world.clearAllCachedHighlightHashes();
     }
 
-    private Overlay current(ResourceKey<Level> dimension) {
+    private Overlay current(ResourceKey<Level> dimension) { return current(dimension, registry); }
+
+    private static Overlay current(ResourceKey<Level> dimension, HighlighterRegistry registry) {
         Overlay value = overlay;
         MapProcessor processor = XaeroBridge.processor();
         TownGateway gateway = TownGateway.get();
@@ -108,7 +117,7 @@ final class ProjectHighlighter extends ChunkHighlighter {
                 && binding.equals(value.world.getMainId() + "|" + nativeDimension.getCurrentMultiworld()) ? value : null;
     }
 
-    private Area areaAt(Overlay value, String dimension, int x, int z) {
+    private static Area areaAt(Overlay value, String dimension, int x, int z) {
         if (value == null) return null;
         for (Area area : value.areas) if (area.dimension.equals(dimension) && area.contains(x, z)) return area;
         return null;
@@ -146,21 +155,102 @@ final class ProjectHighlighter extends ChunkHighlighter {
 
     @Override public Component getChunkHighlightSubtleTooltip(ResourceKey<Level> dimension, int x, int z) {
         Area area = areaAt(current(dimension), dimension.identifier().toString(), x, z);
-        return area == null ? null : Component.literal(area.name);
+        return area == null ? null : Component.literal(summary(area.name, 40));
     }
 
-    @Override public Component getChunkHighlightBluntTooltip(ResourceKey<Level> dimension, int x, int z) {
-        Overlay value = current(dimension);
-        if (value == null) return null;
-        String id = dimension.identifier().toString();
-        List<String> tips = new ArrayList<>();
-        for (Area area : value.areas) if (area.dimension.equals(id) && area.contains(x, z)) tips.add(area.tooltip);
-        return tips.isEmpty() ? null : Component.literal(String.join("\n\n", tips));
-    }
+    /** 本项目的完整提示在地图尾层绘制，不参与 Xaero 的单行 Blunt 拼接。 */
+    @Override public Component getChunkHighlightBluntTooltip(ResourceKey<Level> dimension, int x, int z) { return null; }
 
     @Override public void addMinimapBlockHighlightTooltips(List<Component> tooltips, ResourceKey<Level> dimension, int x, int z, int width) {
-        Component tooltip = getBlockHighlightBluntTooltip(dimension, x, z);
-        if (tooltip != null) tooltips.add(tooltip);
+        Overlay value = current(dimension);
+        if (value == null) return;
+        String id = dimension.identifier().toString();
+        for (Area area : value.areas) if (area.dimension.equals(id) && area.contains(x >> 4, z >> 4)) {
+            tooltips.add(Component.literal(summary(area.name, 40)));
+            tooltips.add(Component.literal("负责人：" + summary(area.leaderName, 40)));
+            tooltips.add(Component.literal("类型：" + area.type));
+            for (String line : textLines("简介：" + summary(area.introduction, 100), Math.max(40, width), Minecraft.getInstance().font)) tooltips.add(Component.literal(line));
+            if (!area.status.equals("completed")) tooltips.add(Component.literal("状态：" + state(area.status)));
+        }
+    }
+
+    /** 使用 Xaero 当帧鼠标区块与维度，卡片只读取当前绑定底图上的覆盖层。 */
+    static void renderTooltip(GuiMap screen, GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
+        if (VersionClient.currentScreen() != screen || GuiMap.hiddenUI || screen.width < 160 || screen.height < 140) return;
+        try {
+            if (HoverFields.MENU.get(screen) != null || HoverFields.WAYPOINTS.getBoolean(screen) || HoverFields.PLAYERS.getBoolean(screen)) return;
+            for (var child : screen.children()) if (child instanceof AbstractWidget widget && widget.visible && widget.isMouseOver(mouseX, mouseY)) return;
+            @SuppressWarnings("unchecked") ResourceKey<Level> dimension = (ResourceKey<Level>) HoverFields.DIMENSION.get(screen);
+            Overlay previous = overlay;
+            Overlay value = previous == null ? null : current(dimension, previous.registry);
+            if (value == null) return;
+            int chunkX = HoverFields.X.getInt(screen) >> 4, chunkZ = HoverFields.Z.getInt(screen) >> 4;
+            Area area = areaAt(value, dimension.identifier().toString(), chunkX, chunkZ);
+            if (area == null) return;
+            Font font = Minecraft.getInstance().font;
+            int width = Math.min(280, screen.width - 32), step = font.lineHeight + 2;
+            List<String> title = limitedLines(area.name, width, 2, font);
+            List<String> owner = limitedLines("负责人：" + summary(area.leaderName, 80), width - OWNER_TEXT_OFFSET, 2, font);
+            int ownerHeight = Math.max(AVATAR_SIZE, owner.size() * step);
+            int fixedHeight = title.size() * step + 4 + ownerHeight + step * (area.status.equals("completed") ? 2 : 3) + 6;
+            int maximumIntroductionLines = Math.max(1, Math.min(6, (screen.height - 32 - fixedHeight) / step));
+            List<String> introduction = limitedLines("简介：" + area.introduction, width, maximumIntroductionLines, font);
+            int height = fixedHeight + introduction.size() * step;
+            if (height > screen.height - 32) return;
+            int[] position = tooltipPosition(screen.width, screen.height, width, height, mouseX, mouseY);
+            int x = position[0], y = position[1];
+            graphics.nextStratum();
+            TooltipRenderUtil.extractTooltipBackground(graphics, x, y, width, height, null);
+            for (String line : title) { graphics.text(font, line, x, y, TownStyle.ACCENT, true); y += step; }
+            y += 4;
+            VersionClient.drawAvatar(graphics, area.leaderId, area.leaderName, x, y, AVATAR_SIZE);
+            for (int index = 0; index < owner.size(); index++) graphics.text(font, owner.get(index), x + OWNER_TEXT_OFFSET, y + index * step + 2, TownStyle.TEXT, false);
+            y += ownerHeight;
+            graphics.text(font, "类型：" + area.type, x, y, TownStyle.MUTED, false); y += step;
+            for (String line : introduction) { graphics.text(font, line, x, y, TownStyle.TEXT, false); y += step; }
+            if (!area.status.equals("completed")) { graphics.text(font, "状态：" + state(area.status), x, y, TownStyle.ACCENT, false); y += step; }
+            graphics.text(font, "右键查看项目详情", x, y + 6, TownStyle.MUTED, false);
+        } catch (IllegalAccessException exception) { throw new IllegalStateException("读取 Xaero 地图悬停位置失败", exception); }
+    }
+
+    static List<String> textLines(String text, int width, Font font) { return textLines(text, width, font::width); }
+
+    static List<String> textLines(String text, int width, ToIntFunction<String> measure) {
+        List<String> result = new ArrayList<>();
+        for (String paragraph : text.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1)) {
+            StringBuilder line = new StringBuilder();
+            for (int offset = 0; offset < paragraph.length();) {
+                int point = paragraph.codePointAt(offset);
+                String next = new String(Character.toChars(point));
+                if (!line.isEmpty() && measure.applyAsInt(line + next) > width) { result.add(line.toString()); line.setLength(0); }
+                line.append(next); offset += Character.charCount(point);
+            }
+            result.add(line.toString());
+        }
+        return result;
+    }
+
+    private static List<String> limitedLines(String text, int width, int maximum, Font font) {
+        List<String> lines = textLines(text, width, font);
+        if (lines.size() <= maximum) return lines;
+        List<String> result = new ArrayList<>(lines.subList(0, maximum));
+        result.set(maximum - 1, font.plainSubstrByWidth(result.get(maximum - 1), Math.max(0, width - font.width("…"))) + "…");
+        return result;
+    }
+
+    static int[] tooltipPosition(int screenWidth, int screenHeight, int width, int height, int mouseX, int mouseY) {
+        int x = mouseX + 12;
+        if (x + width + 16 > screenWidth) x = mouseX - width - 12;
+        return new int[]{Math.max(16, Math.min(screenWidth - width - 16, x)), Math.max(16, Math.min(screenHeight - height - 16, mouseY - 12))};
+    }
+
+    private static final class HoverFields {
+        static final Field X = field("mouseBlockPosX"), Z = field("mouseBlockPosZ"), DIMENSION = field("mouseBlockDim");
+        static final Field MENU = field("rightClickMenu"), WAYPOINTS = field("overWaypointsMenu"), PLAYERS = field("overPlayersMenu");
+        private static Field field(String name) {
+            try { Field field = GuiMap.class.getDeclaredField(name); field.setAccessible(true); return field; }
+            catch (ReflectiveOperationException exception) { throw new IllegalStateException("Xaero 地图悬停接口不兼容：" + name, exception); }
+        }
     }
 
     static int nativeColor(int rgb, int alpha) {

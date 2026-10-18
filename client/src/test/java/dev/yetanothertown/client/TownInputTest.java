@@ -13,7 +13,7 @@ public final class TownInputTest {
         checks++;
     }
 
-    public static void main(String[] arguments) {
+    public static void main(String[] arguments) throws Exception {
         MapTileSelection selection = new MapTileSelection(2, 4);
         selection.setEnd(-3, -5);
         var chunks = XaeroBridge.selectionChunks(selection, "minecraft:overworld");
@@ -24,6 +24,15 @@ public final class TownInputTest {
         require(!ProjectHighlighter.intersects(-32, -1, 0, 3, 0, 2, 0, 3), "Adjacent negative and positive chunks must not overlap");
         require(ProjectHighlighter.summary("第一行\n 第二行", 100).equals("第一行 第二行"), "Hover instructions must collapse line breaks without losing text");
         require(ProjectHighlighter.summary("a😀b", 2).equals("a😀…"), "Hover truncation must preserve complete Unicode characters");
+        java.util.function.ToIntFunction<String> measure = text -> text.codePointCount(0, text.length());
+        require(ProjectHighlighter.textLines("第一行\r\n第二行\n第三行\r第四行", 10, measure).equals(java.util.List.of("第一行", "第二行", "第三行", "第四行")), "Hover must render each newline as a separate line, never as a control glyph");
+        require(ProjectHighlighter.textLines("a😀b", 2, measure).equals(java.util.List.of("a😀", "b")), "Wrapped hover text must preserve Unicode surrogate pairs");
+        require(ProjectHighlighter.textLines("abcdef", 2, measure).equals(java.util.List.of("ab", "cd", "ef")), "Long descriptions must wrap to the available width");
+        require(ProjectHighlighter.textLines("a\n\nb", 10, measure).equals(java.util.List.of("a", "", "b")), "Paragraph spacing must survive wrapping");
+        int[] lowerTooltip = ProjectHighlighter.tooltipPosition(640, 360, 280, 160, 638, 358);
+        require(lowerTooltip[0] >= 16 && lowerTooltip[0] + 280 <= 624 && lowerTooltip[1] >= 16 && lowerTooltip[1] + 160 <= 344, "Tooltip near bottom-right must retain space for its background inside the screen");
+        int[] upperTooltip = ProjectHighlighter.tooltipPosition(640, 360, 280, 160, 0, 0);
+        require(upperTooltip[0] == 16 && upperTooltip[1] == 16, "Tooltip near top-left must remain inside the screen");
         var activeWorld = TownGateway.object("id", "0123456789abcdef01234567", "archived", false);
         require(XaeroBridge.associationBlockReason(activeWorld, true, "minecraft:overworld", "minecraft:overworld", "town", "town").isEmpty(), "A loaded current map must allow one-step association without an existing binding");
         activeWorld.addProperty("archived", true);
@@ -118,6 +127,117 @@ public final class TownInputTest {
         require(!tracker.enter("station", 26, 8), "Crossing a shared project boundary must still respect each project's cooldown");
         tracker.reset();
         require(tracker.enter("station", 25, 8), "Changing world context must reset entry detection");
+        nativeAssociationTests();
         System.out.println("TownInput: " + checks + " checks passed through real vanilla dispatch and native selection; no game launched");
+    }
+
+    /** 无窗口初始化注册表；只替代配置落盘和注入字段，确认及玩家地图解析全部执行原生代码。 */
+    private static void nativeAssociationTests() throws Exception {
+        net.minecraft.SharedConstants.tryDetectVersion();
+        net.minecraft.server.Bootstrap.bootStrap();
+        Class<?> levelType = nativeFixtureType("Level", net.minecraft.client.multiplayer.ClientLevel.class, null);
+        Class<?> worldType = nativeFixtureType("World", xaero.map.world.MapWorld.class, "saveConfig");
+        Class<?> dimensionType = nativeFixtureType("Dimension", xaero.map.world.MapDimension.class, "saveConfigUnsynced");
+        for (int mode = 0; mode < 3; mode++) for (boolean serverId : new boolean[]{false, true}) {
+            NativeFixture fixture = nativeFixture(mode, serverId, levelType, worldType, dimensionType);
+            require(XaeroBridge.confirmAssociation(fixture.processor(), fixture.dimension(), "test-server|cm$town"), "One-step native association must work in every mode: " + mode + "/" + serverId);
+            require(fixture.world().getPlayerMapKey().getMw().equals("cm$town"), "The full native player lookup must resolve the selected map after confirmation");
+            require(nativeField(fixture.world(), xaero.map.world.MapWorld.class, "futureMultiworldType").equals(mode == 0 && !serverId ? 1 : mode), "Only conflicting Single mode may change; existing Manual, Spawn and server-controlled modes must remain unchanged");
+        }
+        NativeFixture matching = nativeFixture(0, false, levelType, worldType, dimensionType);
+        String automatic = matching.world().getPlayerMapKey().getMw();
+        nativeField(matching.dimension(), xaero.map.world.MapDimension.class, "currentMultiworld", automatic);
+        nativeField(matching.dimension(), xaero.map.world.MapDimension.class, "futureCustomSelectedMultiworld", automatic);
+        nativeField(matching.processor(), xaero.map.MapProcessor.class, "waitingForWorldUpdate", true);
+        require(XaeroBridge.confirmAssociation(matching.processor(), matching.dimension(), "test-server|" + automatic)
+                && matching.world().getFutureMultiworldType(matching.dimension()) == 0, "An already matching Single map must not change mode or be rejected by a pending worker update");
+        for (int mode = 1; mode < 3; mode++) {
+            NativeFixture waiting = nativeFixture(mode, false, levelType, worldType, dimensionType);
+            nativeField(waiting.processor(), xaero.map.MapProcessor.class, "waitingForWorldUpdate", true);
+            require(XaeroBridge.confirmAssociation(waiting.processor(), waiting.dimension(), "test-server|cm$town")
+                    && waiting.world().getPlayerMapKey().getMw().equals("cm$town"), "A pending worker update must not block valid Manual or World Spawn confirmation: " + mode);
+        }
+        NativeFixture serverWaiting = nativeFixture(0, true, levelType, worldType, dimensionType);
+        nativeField(serverWaiting.processor(), xaero.map.MapProcessor.class, "waitingForWorldUpdate", true);
+        require(XaeroBridge.confirmAssociation(serverWaiting.processor(), serverWaiting.dimension(), "test-server|cm$town"), "Server-controlled effective mode must stay usable while the worker updates");
+        NativeFixture firstAssociation = nativeFixture(0, false, levelType, worldType, dimensionType);
+        nativeField(firstAssociation.dimension(), xaero.map.world.MapDimension.class, "confirmedMultiworld", null);
+        require(XaeroBridge.confirmAssociation(firstAssociation.processor(), firstAssociation.dimension(), "test-server|cm$town")
+                && firstAssociation.world().getPlayerMapKey().getMw().equals("cm$town"), "The first Single-mode association must work without any previously confirmed map");
+        for (int invalid = 0; invalid < 6; invalid++) {
+            NativeFixture fixture = nativeFixture(0, false, levelType, worldType, dimensionType);
+            xaero.map.world.MapDimension target = fixture.dimension();
+            switch (invalid) {
+                case 0 -> nativeField(fixture.processor(), xaero.map.MapProcessor.class, "mapWorldUsable", false);
+                case 1 -> fixture.processor().mainWorld = null;
+                case 2 -> fixture.world().setCustomDimensionId(net.minecraft.world.level.Level.NETHER);
+                case 3 -> { target = (xaero.map.world.MapDimension) allocateNative(dimensionType); nativeField(target, xaero.map.world.MapDimension.class, "mapWorld", fixture.world()); }
+                case 4 -> nativeField(fixture.processor(), xaero.map.MapProcessor.class, "waitingForWorldUpdate", true);
+                case 5 -> nativeField(fixture.dimension(), xaero.map.world.MapDimension.class, "futureCustomSelectedMultiworld", "other-map");
+            }
+            require(!XaeroBridge.confirmAssociation(fixture.processor(), target, "test-server|cm$town")
+                    && nativeField(fixture.world(), xaero.map.world.MapWorld.class, "futureMultiworldType").equals(0)
+                    && nativeField(fixture.dimension(), xaero.map.world.MapDimension.class, "confirmedMultiworld").equals("cm$old"), "Invalid native preconditions must not change mode or confirmation: " + invalid);
+        }
+        nativeField(null, net.minecraft.client.Minecraft.class, "instance", null);
+    }
+
+    private record NativeFixture(xaero.map.MapProcessor processor, xaero.map.world.MapWorld world, xaero.map.world.MapDimension dimension) { }
+
+    private static NativeFixture nativeFixture(int mode, boolean serverId, Class<?> levelType, Class<?> worldType, Class<?> dimensionType) throws Exception {
+        var client = (net.minecraft.client.Minecraft) allocateNative(net.minecraft.client.Minecraft.class);
+        var level = (net.minecraft.client.multiplayer.ClientLevel) allocateNative(levelType);
+        nativeField(level, net.minecraft.world.level.Level.class, "dimension", net.minecraft.world.level.Level.OVERWORLD);
+        var data = new xaero.map.mcworld.WorldMapClientWorldData(level);
+        data.latestSpawn = new net.minecraft.core.BlockPos(0, 64, 0); data.serverLevelId = serverId ? 77 : null;
+        ((xaero.map.mcworld.IWorldMapClientWorld) level).setXaero_worldmapData(data);
+        client.level = level; nativeField(null, net.minecraft.client.Minecraft.class, "instance", client);
+        var processor = (xaero.map.MapProcessor) allocateNative(xaero.map.MapProcessor.class);
+        var world = (xaero.map.world.MapWorld) allocateNative(worldType);
+        var dimension = (xaero.map.world.MapDimension) allocateNative(dimensionType);
+        processor.mainWorld = level;
+        nativeField(processor, xaero.map.MapProcessor.class, "mapWorld", world); nativeField(processor, xaero.map.MapProcessor.class, "mapWorldUsable", true);
+        nativeField(world, xaero.map.world.MapWorld.class, "mapProcessor", processor); nativeField(world, xaero.map.world.MapWorld.class, "mainId", "test-server");
+        nativeField(world, xaero.map.world.MapWorld.class, "isMultiplayer", true); nativeField(world, xaero.map.world.MapWorld.class, "futureMultiworldType", mode);
+        nativeField(world, xaero.map.world.MapWorld.class, "currentDimensionId", net.minecraft.world.level.Level.OVERWORLD);
+        var dimensions = new java.util.Hashtable<net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level>, xaero.map.world.MapDimension>();
+        dimensions.put(net.minecraft.world.level.Level.OVERWORLD, dimension); nativeField(world, xaero.map.world.MapWorld.class, "dimensions", dimensions);
+        nativeField(dimension, xaero.map.world.MapDimension.class, "mapWorld", world); nativeField(dimension, xaero.map.world.MapDimension.class, "dimId", net.minecraft.world.level.Level.OVERWORLD);
+        nativeField(dimension, xaero.map.world.MapDimension.class, "autoMultiworldBindings", new java.util.Hashtable<String, String>());
+        nativeField(dimension, xaero.map.world.MapDimension.class, "multiworldIds", new java.util.ArrayList<>(java.util.List.of("cm$town")));
+        nativeField(dimension, xaero.map.world.MapDimension.class, "multiworldNames", new java.util.Hashtable<String, String>());
+        nativeField(dimension, xaero.map.world.MapDimension.class, "currentMultiworld", "cm$town"); nativeField(dimension, xaero.map.world.MapDimension.class, "futureCustomSelectedMultiworld", "cm$town");
+        nativeField(dimension, xaero.map.world.MapDimension.class, "confirmedMultiworld", "cm$old"); dimension.futureMultiworldWritable = true;
+        processor.updateVisitedDimension(level);
+        return new NativeFixture(processor, world, dimension);
+    }
+
+    /** 无构造器空壳跨三个 Minecraft 版本复用，避免测试依赖 ClientLevel 构造参数。 */
+    private static Class<?> nativeFixtureType(String suffix, Class<?> parent, String saveMethod) throws Exception {
+        var type = java.lang.constant.ClassDesc.of(TownInputTest.class.getPackageName() + ".NativeFixture" + suffix);
+        var data = java.lang.constant.ClassDesc.of("xaero.map.mcworld.WorldMapClientWorldData");
+        byte[] bytes = java.lang.classfile.ClassFile.of().build(type, builder -> {
+            builder.withSuperclass(java.lang.constant.ClassDesc.of(parent.getName()));
+            if (saveMethod != null) builder.withMethodBody(saveMethod, java.lang.constant.MethodTypeDesc.of(java.lang.constant.ConstantDescs.CD_void), java.lang.classfile.ClassFile.ACC_PUBLIC, code -> code.return_());
+            else {
+                builder.withInterfaceSymbols(java.lang.constant.ClassDesc.of("xaero.map.mcworld.IWorldMapClientWorld"));
+                builder.withField("data", data, java.lang.classfile.ClassFile.ACC_PRIVATE);
+                builder.withMethodBody("getXaero_worldmapData", java.lang.constant.MethodTypeDesc.of(data), java.lang.classfile.ClassFile.ACC_PUBLIC, code -> code.aload(0).getfield(type, "data", data).areturn());
+                builder.withMethodBody("setXaero_worldmapData", java.lang.constant.MethodTypeDesc.of(java.lang.constant.ConstantDescs.CD_void, data), java.lang.classfile.ClassFile.ACC_PUBLIC, code -> code.aload(0).aload(1).putfield(type, "data", data).return_());
+            }
+        });
+        return java.lang.invoke.MethodHandles.lookup().defineClass(bytes);
+    }
+
+    private static Object allocateNative(Class<?> type) throws Exception {
+        Class<?> allocator = Class.forName("sun.misc.Unsafe");
+        var field = allocator.getDeclaredField("theUnsafe"); field.setAccessible(true);
+        return allocator.getMethod("allocateInstance", Class.class).invoke(field.get(null), type);
+    }
+    private static Object nativeField(Object target, Class<?> owner, String name) throws Exception {
+        var field = owner.getDeclaredField(name); field.setAccessible(true); return field.get(target);
+    }
+    private static void nativeField(Object target, Class<?> owner, String name, Object value) throws Exception {
+        var field = owner.getDeclaredField(name); field.setAccessible(true); field.set(target, value);
     }
 }

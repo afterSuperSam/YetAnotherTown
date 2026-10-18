@@ -214,6 +214,7 @@ public final class TownScreen extends Screen {
         button("客户端设置", settingsX, wide ? y + 73 : y + 18, settingsWidth, this::connectionForm);
         int heroY = wide ? y : y + profileHeight + 8;
         int archiveWidth = mainWidth;
+        int homeActionWidth = (mainWidth - 30) / 2;
         int heroHeight = 180;
         panels.add(new Panel(x, heroY, mainWidth, heroHeight, true));
         showLogo = !gateway.townId.isEmpty();
@@ -233,20 +234,19 @@ public final class TownScreen extends Screen {
             int openTickets = 0;
             for (JsonElement element : array("tickets")) if (!stringValue(element.getAsJsonObject(), "status").equals("resolved")) openTickets++;
             label(font.plainSubstrByWidth("小镇事务 · " + array("projects").size() + " 项目 · " + openTickets + " 待修", archiveWidth - 24), x + 12, heroY + 115, ACCENT);
-            int actionWidth = (archiveWidth - 30) / 2;
-            button("项目地图", x + 12, heroY + 148, actionWidth, this::openMap);
-            button("成员与权限", x + 18 + actionWidth, heroY + 148, actionWidth, () -> { tab = 2; section = 0; rebuild(); });
+            button("项目地图", x + 12, heroY + 148, homeActionWidth, this::openMap);
+            button("成员与权限", x + 18 + homeActionWidth, heroY + 148, homeActionWidth, () -> { tab = 2; section = 0; rebuild(); });
         }
         label(font.plainSubstrByWidth("服务器 · " + stringValue(town, "server", VersionClient.serverAddress()), archiveWidth - 24), x + 12, heroY + 131, MUTED);
         int worldY = heroY + heroHeight + 8;
         boolean compactWorld = mainWidth >= 280;
         int worldHeight = compactWorld ? 64 : 96;
-        int worldTextWidth = mainWidth - (compactWorld ? 126 : 20);
+        int worldTextWidth = compactWorld ? homeActionWidth : mainWidth - 20;
         panels.add(new Panel(x, worldY, mainWidth, worldHeight, false));
         label("世界与周目", x + 10, worldY + 12, ACCENT);
         label(font.plainSubstrByWidth(worldName(gateway.worldId), worldTextWidth), x + 10, worldY + 29, TEXT);
         label(font.plainSubstrByWidth(roleName(stringValue(objectValue(gateway.snapshot, "currentMember"), "roleId", "尚未加入")), worldTextWidth), x + 10, worldY + 44, MUTED);
-        Button world = button("周目与地图", compactWorld ? x + mainWidth - 106 : x + 10, worldY + (compactWorld ? 22 : 65), compactWorld ? 96 : mainWidth - 20, this::chooseWorld);
+        Button world = button("周目与地图", x + 18 + homeActionWidth, worldY + (compactWorld ? 22 : 65), homeActionWidth, this::chooseWorld);
         world.active = !gateway.townId.isEmpty();
         int linksY = wide ? y + profileHeight + 8 : worldY + worldHeight + 8;
         Button create = button("注册小镇", settingsX, linksY, settingsWidth, this::createTown);
@@ -713,8 +713,9 @@ public final class TownScreen extends Screen {
         TownStyle.window(graphics, window, bodyTop, bodyBottom);
         double progress = gateway.config().animationEnabled ? Math.min(1, (System.nanoTime() - openedAt) / 260_000_000d) : 1;
         double eased = 1 - Math.pow(1 - progress, 3);
-        TownStyle.icon(graphics, 0, contentLeft - 9, window.top() + 10, TownStyle.FRAME_TEXT);
-        graphics.text(font, font.plainSubstrByWidth(TownStyle.title(), contentWidth - 50), contentLeft + 6 + (int) ((1 - eased) * 4), window.top() + 10, TownStyle.FRAME_TEXT, false);
+        int headingX = contentLeft + (int) ((1 - eased) * 4);
+        TownStyle.icon(graphics, 0, headingX, window.top() + 11, TownStyle.FRAME_TEXT);
+        graphics.text(font, font.plainSubstrByWidth(TownStyle.title(), contentWidth - 50), headingX + 14, window.top() + 10, TownStyle.FRAME_TEXT, false);
         Component hoveredText = null;
         graphics.enableScissor(contentLeft, bodyTop, contentLeft + contentWidth, bodyBottom);
         for (Panel panel : panels) TownStyle.panel(graphics, panel.x(), panel.y(), panel.width(), panel.height(), panel.accented());

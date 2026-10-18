@@ -96,7 +96,9 @@ public final class VerifyLinks {
     /** 检查原生注入目标、区块单位和实际注册路径，防止退回仅自建窗口可用的覆盖层。 */
     private void verifyNativeMap(String prefix, List<String> failures) throws IOException {
         ClassModel map = load("xaero/map/gui/GuiMap");
-        for (var field : Map.of("mapTileSelection", "Lxaero/map/gui/MapTileSelection;", "rightClickDim", "Lnet/minecraft/resources/ResourceKey;").entrySet()) {
+        for (var field : Map.of("mapTileSelection", "Lxaero/map/gui/MapTileSelection;", "rightClickDim", "Lnet/minecraft/resources/ResourceKey;",
+                "mouseBlockPosX", "I", "mouseBlockPosZ", "I", "mouseBlockDim", "Lnet/minecraft/resources/ResourceKey;",
+                "rightClickMenu", "Lxaero/map/gui/dropdown/rightclick/GuiRightClickMenu;", "overWaypointsMenu", "Z", "overPlayersMenu", "Z").entrySet()) {
             if (map == null || map.fields().stream().noneMatch(value -> value.fieldName().equalsString(field.getKey()) && value.fieldType().equalsString(field.getValue())))
                 failures.add("Xaero reflection contract changed: GuiMap." + field.getKey() + field.getValue());
         }
@@ -105,6 +107,7 @@ public final class VerifyLinks {
                 new String[]{"xaero/map/gui/GuiMap", "getRightClickOptions", "()Ljava/util/ArrayList;"},
                 new String[]{"xaero/map/MapProcessor", "confirmMultiworld", "(Lxaero/map/world/MapDimension;)Z"},
                 new String[]{prefix + "/XaeroBridge", "registerHighlighter", "(Ljava/lang/Object;)V"},
+                new String[]{prefix + "/XaeroBridge", "renderMapTooltip", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V"},
                 new String[]{prefix + "/XaeroBridge", "playerMapKey", "(Ljava/lang/String;)Ljava/lang/String;"},
                 new String[]{prefix + "/XaeroBridge", "associateCurrentMap", "(Lnet/minecraft/client/gui/screens/Screen;)Z"},
                 new String[]{prefix + "/XaeroBridge", "addMapOptions", "(Ljava/lang/Object;Ljava/lang/Object;)V"}))
@@ -125,11 +128,14 @@ public final class VerifyLinks {
         boolean confirmsPlayer = bridge != null && bridge.methods().stream().anyMatch(method -> {
             String name = method.methodName().stringValue();
             return name.startsWith("lambda$associateCurrentMap$")
-                    && calls(bridge, name, "xaero/map/MapProcessor", "setMultiworld")
-                    && calls(bridge, name, "xaero/map/MapProcessor", "confirmMultiworld")
-                    && calls(bridge, name, prefix + "/XaeroBridge", "playerMapKey");
+                    && calls(bridge, name, prefix + "/XaeroBridge", "confirmAssociation");
         });
-        if (!confirmsPlayer) failures.add("Map association must reselect and confirm through Xaero, then verify the actual player map identity");
+        if (!confirmsPlayer || !calls(bridge, "confirmAssociation", "xaero/map/MapProcessor", "setMultiworld")
+                || !calls(bridge, "confirmAssociation", "xaero/map/MapProcessor", "confirmMultiworld")
+                || !calls(bridge, "confirmAssociation", "xaero/map/MapProcessor", "toggleMultiworldType")
+                || !calls(bridge, "confirmAssociation", "xaero/map/world/MapWorld", "getFutureMultiworldType")
+                || !calls(bridge, "confirmAssociation", "xaero/map/world/MapWorld", "getPlayerMapKey"))
+            failures.add("Map association must resolve Single mode through Xaero, reselect and confirm, then verify the actual player map identity");
         if (!calls(bridge, "playerMapKey", "xaero/map/world/MapConnectionNode", "getDimId")
                 || !usesField(bridge, "playerMapKey", "xaero/map/MapProcessor", "mainWorld")
                 || !calls(bridge, "playerMapKey", "xaero/map/world/MapWorld", "getPlayerMapKey")
@@ -157,11 +163,14 @@ public final class VerifyLinks {
                 || !calls(nativeProcessor, "confirmMultiworld", "xaero/map/world/MapWorld", "getCurrentDimension")
                 || !calls(nativeProcessor, "confirmMultiworld", "xaero/map/world/MapDimension", "confirmMultiworldUnsynced"))
             failures.add("Xaero native player map confirmation no longer checks the live dimension before confirming the selected map");
-        if (!calls(map, "extractRenderState", "xaero/map/highlight/DimensionHighlighterHandler", "getBlockHighlightBluntTooltip")
-                || !calls(map, "extractRenderState", "xaero/lib/client/gui/widget/Tooltip", "drawBox"))
-            failures.add("Native map hover must render the full project tooltip through Xaero's tooltip box");
+        if (!calls(bridge, "renderMapTooltip", prefix + "/ProjectHighlighter", "renderTooltip")
+                || !calls(highlighter, "renderTooltip", prefix + "/VersionClient", "drawAvatar")
+                || !calls(highlighter, "renderTooltip", prefix + "/ProjectHighlighter", "limitedLines")
+                || !calls(highlighter, "renderTooltip", "net/minecraft/client/gui/screens/inventory/tooltip/TooltipRenderUtil", "extractTooltipBackground"))
+            failures.add("Native project hover must render wrapped text and owner avatar in its tooltip card");
         verifyMixin("HighlighterRegistryMixin", "xaero/map/highlight/HighlighterRegistry", "end()V", "HEAD", "registerHighlighter", failures);
         verifyMixin("MapMenuMixin", "xaero/map/gui/GuiMap", "getRightClickOptions()Ljava/util/ArrayList;", "RETURN", "addMapOptions", failures);
+        verifyMixin("MapMenuMixin", "xaero/map/gui/GuiMap", "extractRenderState(Lnet/minecraft/client/gui/GuiGraphicsExtractor;IIF)V", "TAIL", "renderMapTooltip", failures);
         String metadata = resource("fabric.mod.json");
         String mixins = resource("yetanothertown.mixins.json");
         if (!metadata.contains("\"yetanothertown.mixins.json\"") || !mixins.contains("\"HighlighterRegistryMixin\"") || !mixins.contains("\"MapMenuMixin\"")

@@ -36,6 +36,9 @@ import static dev.yetanothertown.client.TownScreen.*;
 
 /** 接入 Xaero 原生高亮、右键区块选区与个人历史底图。 */
 public final class XaeroBridge {
+    public static void renderMapTooltip(Object screen, Object graphics, Object mouseX, Object mouseY) {
+        ProjectHighlighter.renderTooltip((GuiMap) screen, (net.minecraft.client.gui.GuiGraphicsExtractor) graphics, (Integer) mouseX, (Integer) mouseY);
+    }
     private static final System.Logger LOGGER = System.getLogger("Yet Another Town");
     private static Waypoint navigationWaypoint;
     private static WaypointSet navigationSet;
@@ -249,17 +252,41 @@ public final class XaeroBridge {
                 gateway.status = "地图或周目已变化，请在当前地图重新关联";
                 return false;
             }
-            if (!saveAssociation(gateway, dimensionId, key, () -> {
-                if (key.equals(playerMapKey(dimensionId))) return true;
-                processor.setMultiworld(dimension, dimension.getCurrentMultiworld());
-                return processor.confirmMultiworld(dimension) && key.equals(playerMapKey(dimensionId));
-            })) return false;
+            if (!saveAssociation(gateway, dimensionId, key, () -> confirmAssociation(processor, dimension, key))) return false;
             if (returnTo instanceof BoundMap bound) bound.keepConfirmedMap(dimension);
         }
         ProjectHighlighter.refresh();
         if (!(returnTo instanceof GuiMap)) return openMap(returnTo);
         if (VersionClient.currentScreen() != returnTo) VersionClient.show(returnTo);
         return true;
+    }
+
+    /** 单地图模式不会更新玩家实例，显式关联不同底图时先走原生切换到手动模式。 */
+    static boolean confirmAssociation(MapProcessor processor, MapDimension dimension, String key) {
+        synchronized (processor) {
+            MapWorld world = processor.getMapWorld();
+            if (!processor.isMapWorldUsable() || processor.mainWorld == null
+                    || world == null || dimension == null || dimension.getMapWorld() != world || world.getCurrentDimension() != dimension
+                    || !processor.mainWorld.dimension().equals(dimension.getDimId()) || world.getPotentialDimId() != dimension.getDimId()
+                    || dimension.getCurrentMultiworld() == null || !dimension.getCurrentMultiworld().equals(dimension.getFutureMultiworldUnsynced())) return false;
+            MapConnectionNode playerMap = world.getPlayerMapKey();
+            if (playerMap != null && dimension.getDimId().equals(playerMap.getDimId()) && key.equals(world.getMainId() + "|" + playerMap.getMw())) return true;
+            if (world.getFutureMultiworldType(dimension) == 0) {
+                processor.toggleMultiworldType(dimension);
+                if (world.getFutureMultiworldType(dimension) != 1) {
+                    LOGGER.log(System.Logger.Level.WARNING, "Native map association failed: mode={0}, target={1}, playerMap={2}, confirmed=false, modeChangeRejected=true",
+                            world.getFutureMultiworldType(dimension), dimension.getCurrentMultiworld(), playerMap == null ? "<none>" : playerMap.getMw());
+                    return false;
+                }
+            }
+            processor.setMultiworld(dimension, dimension.getCurrentMultiworld());
+            boolean confirmed = processor.confirmMultiworld(dimension);
+            playerMap = world.getPlayerMapKey();
+            boolean matches = playerMap != null && dimension.getDimId().equals(playerMap.getDimId()) && key.equals(world.getMainId() + "|" + playerMap.getMw());
+            if (!confirmed || !matches) LOGGER.log(System.Logger.Level.WARNING, "Native map association failed: mode={0}, target={1}, playerMap={2}, confirmed={3}",
+                    world.getFutureMultiworldType(dimension), dimension.getCurrentMultiworld(), playerMap == null ? "<none>" : playerMap.getMw(), confirmed);
+            return confirmed && matches;
+        }
     }
 
     static boolean saveAssociation(TownGateway gateway, String dimension, String key, BooleanSupplier confirmPlayerMap) {
@@ -269,7 +296,7 @@ public final class XaeroBridge {
         try {
             gateway.bindCurrentMap(dimension, key);
             saved = true;
-            if (!confirmPlayerMap.getAsBoolean()) throw new IllegalStateException("Xaero 尚未确认此玩家地图，请等待底图加载完成后重试");
+            if (!confirmPlayerMap.getAsBoolean()) throw new IllegalStateException("Xaero 未能关联当前地图，请返回玩家所在地图后重试");
             if (!gateway.isCurrent(context)) throw new IllegalStateException("周目或登录状态已变化，请重新关联当前地图");
             gateway.status = "地图已关联";
             return true;
