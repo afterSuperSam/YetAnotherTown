@@ -1,4 +1,4 @@
-package dev.ohmytown.client;
+package dev.yetanothertown.client;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -30,11 +30,12 @@ public final class TownMapScreen extends Screen {
     @Override protected void init() {
         clearFocus();
         clearWidgets();
-        window = TownStyle.bounds(width, height, 380, 244);
+        window = TownStyle.bounds(width, height, 380, 270);
         bodyTop = window.top() + 48;
-        bodyBottom = window.bottom() - 65;
+        bodyBottom = window.bottom() - 91;
         layoutInformation();
         int buttonWidth = Math.min(250, window.width() - 40);
+        addRenderableWidget(TownStyle.button("前往绑定当前地图", (width - buttonWidth) / 2, window.bottom() - 81, buttonWidth, () -> TownScreen.openMapBinding(this)));
         addRenderableWidget(TownStyle.button("重新打开 Xaero 地图", (width - buttonWidth) / 2, window.bottom() - 55, buttonWidth, this::open));
         addRenderableWidget(TownStyle.button("返回小镇", (width - buttonWidth) / 2, window.bottom() - 29, buttonWidth, this::onClose));
     }

@@ -1,4 +1,4 @@
-package dev.ohmytown.client;
+package dev.yetanothertown.client;
 
 import com.google.gson.JsonObject;
 import com.mojang.blaze3d.platform.InputConstants;
@@ -22,12 +22,14 @@ import java.util.function.Consumer;
 
 /** 通用表单负责输入、选择、滚动与明确提交。 */
 final class TownForm extends Screen {
-    record Field(String key, String label, String initial, String[] values, String[] labels, boolean number, boolean paired, boolean multiline) {
-        static Field text(String key, String label, String value) { return new Field(key, label, value, null, null, false, false, false); }
-        static Field multiline(String key, String label, String value) { return new Field(key, label, value, null, null, false, true, true); }
-        static Field number(String key, String label, int value) { return new Field(key, label, Integer.toString(value), null, null, true, true, false); }
-        static Field choice(String key, String label, String value, String[] values, String[] labels) { return new Field(key, label, value, values, labels, false, true, false); }
-        Field compact() { return new Field(key, label, initial, values, labels, number, true, multiline); }
+    record Field(String key, String label, String initial, String[] values, String[] labels, boolean number, boolean paired, boolean multiline, boolean icon, Runnable action) {
+        static Field text(String key, String label, String value) { return new Field(key, label, value, null, null, false, false, false, false, null); }
+        static Field multiline(String key, String label, String value) { return new Field(key, label, value, null, null, false, true, true, false, null); }
+        static Field number(String key, String label, int value) { return new Field(key, label, Integer.toString(value), null, null, true, true, false, false, null); }
+        static Field choice(String key, String label, String value, String[] values, String[] labels) { return new Field(key, label, value, values, labels, false, true, false, false, null); }
+        static Field icon(String key, String label, String value) { return new Field(key, label, value, null, null, false, false, false, true, null); }
+        static Field action(String key, String label, Runnable run) { return new Field(key, label, "", null, null, false, true, false, false, run); }
+        Field compact() { return new Field(key, label, initial, values, labels, number, true, multiline, icon, action); }
         static Field toggle(String key, String label, boolean value) { return choice(key, label, Boolean.toString(value), new String[]{"false", "true"}, new String[]{"关闭", "开启"}); }
     }
     record Action(String label, Runnable run) { }
@@ -54,6 +56,7 @@ final class TownForm extends Screen {
     private String error = "";
     private boolean submitting;
     private boolean discardConfirmation;
+    private boolean breadcrumbTitle;
     private int returningFocusIndex = -1;
     private AbstractWidget pendingFocus;
     private record TextLine(String value, int x, int y, int color) { }
@@ -74,6 +77,8 @@ final class TownForm extends Screen {
         fields.forEach(field -> values.put(field.key(), field.initial()));
     }
 
+    TownForm withBreadcrumbTitle() { breadcrumbTitle = true; return this; }
+
     @Override
     protected void init() {
         rebuild();
@@ -92,7 +97,7 @@ final class TownForm extends Screen {
         window = TownStyle.bounds(width, height, 440, 320);
         panelWidth = window.width();
         left = window.left();
-        bodyTop = window.top() + 48;
+        bodyTop = window.top() + (breadcrumbTitle ? 32 : 48);
         bodyBottom = window.bottom() - 57;
         int contentLeft = left + 16;
         int contentWidth = panelWidth - 32;
@@ -149,9 +154,14 @@ final class TownForm extends Screen {
     private int multilineHeight() { return Math.max(20, Math.min(52, bodyBottom - bodyTop - 24)); }
 
     private void addField(Field field, int x, int y, int width) {
-        labels.add(new TextLine(font.plainSubstrByWidth(field.label(), width), x, y, TownStyle.TEXT));
+        if (field.action() == null) labels.add(new TextLine(font.plainSubstrByWidth(field.label(), width), x, y, TownStyle.TEXT));
+        if (field.icon()) width -= 38;
         int inputY = y + 12;
-        if (field.multiline()) {
+        if (field.action() != null) {
+            Button button = TownStyle.button(field.label(), x, inputY, width, () -> { if (!submitting && validContext()) field.action().run(); });
+            button.active = !submitting;
+            fieldWidgets.put(field.key(), button); addContentWidget(button);
+        } else if (field.multiline()) {
             MultiLineEditBox input;
             if (fieldWidgets.get(field.key()) instanceof MultiLineEditBox existing) {
                 input = existing; input.setWidth(width); input.setHeight(multilineHeight()); input.setX(x); input.setY(inputY);
@@ -240,6 +250,7 @@ final class TownForm extends Screen {
         if (submitting || !discardConfirmation && !validContext()) return;
         JsonObject payload = new JsonObject();
         for (Field field : fields) {
+            if (field.action() != null) continue;
             String value = values.get(field.key()).strip();
             if (field.number()) {
                 try { payload.addProperty(field.key(), parseNumber(field.label(), value)); }
@@ -365,11 +376,15 @@ final class TownForm extends Screen {
     public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
         TownStyle.background(graphics, width, height);
         TownStyle.window(graphics, window, bodyTop, bodyBottom);
-        graphics.text(font, font.plainSubstrByWidth(TownStyle.title(), panelWidth - 68), left + 16, window.top() + 11, TownStyle.FRAME_MUTED, false);
-        graphics.text(font, font.plainSubstrByWidth(title.getString(), panelWidth - 32), left + 16, window.top() + 29, TownStyle.FRAME_TEXT, false);
+        graphics.text(font, font.plainSubstrByWidth(TownStyle.title() + (breadcrumbTitle ? " · " + title.getString() : ""), panelWidth - 68), left + 16, window.top() + 11, TownStyle.FRAME_MUTED, false);
+        if (!breadcrumbTitle) graphics.text(font, font.plainSubstrByWidth(title.getString(), panelWidth - 32), left + 16, window.top() + 29, TownStyle.FRAME_TEXT, false);
         graphics.enableScissor(left + 12, bodyTop, left + panelWidth - 12, bodyBottom);
         for (int y : separators) graphics.fill(left + 16, y, left + panelWidth - 16, y + 1, TownStyle.LINE);
         for (TextLine label : labels) graphics.text(font, label.value(), label.x(), label.y(), label.color(), false);
+        for (Field field : fields) if (field.icon()) {
+            AbstractWidget input = fieldWidgets.get(field.key());
+            if (input != null && input.visible) VersionClient.drawLogo(graphics, values.get(field.key()), input.getX() + input.getWidth() + 6, input.getY() - 6, 32);
+        }
         graphics.disableScissor();
         super.extractRenderState(graphics, mouseX, mouseY, delta);
         String feedback = !TownGateway.get().status.equals(initialStatus) ? TownGateway.get().status : "Tab 切换 · 滚轮 / PageUp / PageDown 浏览";

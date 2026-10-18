@@ -13,7 +13,7 @@ const position = { dimension: 'minecraft:overworld', x: -17, y: 64, z: 0 };
 const rejects = (operation, code) => assert.rejects(operation, error => error instanceof ApiError && error.code === code);
 
 async function fixture(t, config = {}) {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'omt-service-'));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'yat-service-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   let time = Date.parse('2026-10-18T00:00:00Z');
   const store = new JsonStore(path.join(directory, 'state.json'));
@@ -67,7 +67,7 @@ test('指定周目快照只报告同周目工程的区块重叠', async t => {
 
 test('配置拒绝未知项、旧配置和非法范围', () => {
   assert.equal(validateConfig().port, 37841);
-  assert.equal(validateConfig().dataFile, './data/ohmytown.json');
+  assert.equal(validateConfig().dataFile, './data/yetanothertown.json');
   for (const key of ['challengeSeconds', 'defaultProximityRadius', 'maximumProximityRadius']) assert.throws(() => validateConfig({ [key]: 10 }), ApiError);
   for (const config of [{ port: 0 }, { port: '37841' }, { bypassAuthentication: true }, { sessionHours: -1 }, JSON.parse('{"toString":1}'), JSON.parse('{"__proto__":{}}')]) assert.throws(() => validateConfig(config), ApiError);
 });
@@ -323,7 +323,7 @@ test('HTTP 封装、请求格式、认证、请求大小及真实接口交互', 
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const endpoint = `http://127.0.0.1:${server.address().port}`;
   const request = (body, headers = {}) => fetch(`${endpoint}/api`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body });
-  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.6');
+  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.7');
   assert.equal((await request('{broken')).status, 400);
   assert.equal((await request('[]')).status, 400);
   assert.equal((await request(JSON.stringify({ action: 'town.list' }))).status, 401);
@@ -408,4 +408,37 @@ test('只接受当前数据格式，旧版本拒绝启动且文件保持原样',
     await rejects(new TownService({ store: f.store }).initialize(), 'invalid_argument');
     assert.equal(await readFile(f.store.file, 'utf8'), serialized);
   }
+});
+
+
+test('权限组默认图标和自定义图标有效，内置身份与权限保护保持不变', async t => {
+  const f = await fixture(t); const bob = await f.join();
+  const initial = await f.snapshot();
+  assert.deepEqual(initial.roles.map(role => [role.id, role.icon]), [
+    ['newcomer', 'minecraft:dirt'], ['member', 'minecraft:cobblestone'],
+    ['manager', 'minecraft:iron_block'], ['mayor', 'minecraft:emerald_block'],
+  ]);
+  const role = await f.call('role.save', { townId: f.townId, name: '维护员', icon: 'minecraft:gold_block', permissions: ['project.edit'] });
+  assert.equal(role.icon, 'minecraft:gold_block');
+  const changed = await f.call('role.save', { townId: f.townId, id: role.id, icon: 'example:role/stone' });
+  assert.equal(changed.icon, 'example:role/stone');
+  assert.deepEqual(changed.permissions, role.permissions);
+  for (const icon of [null, 5, '', 'stone', 'Minecraft:stone', 'minecraft:bad icon', 'texture:minecraft:stone.png']) {
+    await rejects(f.call('role.save', { townId: f.townId, id: role.id, icon }), 'invalid_argument');
+  }
+  for (const id of ['newcomer', 'mayor']) {
+    const before = (await f.snapshot()).roles.find(role => role.id === id);
+    const after = await f.call('role.save', { townId: f.townId, id, icon: 'minecraft:diamond_block' });
+    assert.deepEqual(after, { ...before, icon: 'minecraft:diamond_block' });
+    await rejects(f.call('role.save', { townId: f.townId, id, name: '改身份' }), 'forbidden');
+    await rejects(f.call('role.save', { townId: f.townId, id, permissions: id === 'newcomer' ? ['project.create'] : [] }), 'forbidden');
+    await rejects(f.call('role.delete', { townId: f.townId, id }), 'forbidden');
+  }
+  await rejects(f.call('role.save', { townId: f.townId, id: 'member', icon: 'minecraft:gold_block' }, bob.token), 'forbidden');
+  const limited = await f.call('role.save', { townId: f.townId, name: '图标助手', permissions: ['roles.manage', 'members.manage'] });
+  await f.call('member.role', { townId: f.townId, playerId: bob.player.id, roleId: limited.id });
+  await rejects(f.call('role.save', { townId: f.townId, id: 'mayor', icon: 'minecraft:dirt' }, bob.token), 'forbidden');
+  const snapshot = await f.snapshot();
+  assert.deepEqual(snapshot.roles.find(role => role.id === 'newcomer').permissions, []);
+  assert.equal(snapshot.members.filter(member => member.roleId === 'mayor').length, 1);
 });

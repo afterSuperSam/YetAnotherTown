@@ -53,7 +53,7 @@ public final class VerifyLinks {
         int checked = 0;
         while (entries.hasMoreElements()) {
             String name = entries.nextElement().getName();
-            if (!name.endsWith(".class") || !(name.startsWith(prefix + "/") || name.startsWith("dev/ohmytown/mixin/") || name.equals("dev/ohmytown/Bootstrap.class") || name.equals("dev/ohmytown/ModMenuIntegration.class"))) continue;
+            if (!name.endsWith(".class") || !(name.startsWith(prefix + "/") || name.startsWith("dev/yetanothertown/mixin/") || name.equals("dev/yetanothertown/Bootstrap.class") || name.equals("dev/yetanothertown/ModMenuIntegration.class"))) continue;
             ClassModel model = load(name.substring(0, name.length() - 6));
             checked++;
             if (model.majorVersion() > 69) failures.add(name + ": requires Java newer than 25");
@@ -103,6 +103,7 @@ public final class VerifyLinks {
         for (String[] method : List.of(
                 new String[]{"xaero/map/highlight/HighlighterRegistry", "end", "()V"},
                 new String[]{"xaero/map/gui/GuiMap", "getRightClickOptions", "()Ljava/util/ArrayList;"},
+                new String[]{"xaero/map/MapProcessor", "confirmMultiworld", "(Lxaero/map/world/MapDimension;)Z"},
                 new String[]{prefix + "/XaeroBridge", "registerHighlighter", "(Ljava/lang/Object;)V"},
                 new String[]{prefix + "/XaeroBridge", "playerMapKey", "(Ljava/lang/String;)Ljava/lang/String;"},
                 new String[]{prefix + "/XaeroBridge", "addMapOptions", "(Ljava/lang/Object;Ljava/lang/Object;)V"}))
@@ -113,19 +114,37 @@ public final class VerifyLinks {
             failures.add("Project overlay must use the native ChunkHighlighter texture pipeline");
         if (!calls(load(prefix + "/XaeroBridge"), "registerHighlighter", "xaero/map/highlight/HighlighterRegistry", "register"))
             failures.add("Project highlighter is not registered with the native registry");
-        if (!calls(load(prefix + "/XaeroBridge"), "playerMapKey", "xaero/map/world/MapConnectionNode", "getDimId")
-                || !calls(load(prefix + "/XaeroBridge"), "playerMapKey", "xaero/map/MapProcessor", "getWorld")
-                || !calls(load(prefix + "/XaeroBridge"), "playerMapKey", "xaero/map/MapProcessor", "getNewWorld"))
-            failures.add("Automatic map binding must validate the actual player dimension and the settled native world");
+        ClassModel bridge = load(prefix + "/XaeroBridge");
+        if (!calls(bridge, "playerMapKey", "xaero/map/world/MapConnectionNode", "getDimId")
+                || !usesField(bridge, "playerMapKey", "xaero/map/MapProcessor", "mainWorld")
+                || !calls(bridge, "playerMapKey", "xaero/map/world/MapWorld", "getPlayerMapKey")
+                || calls(bridge, "playerMapKey", "xaero/map/MapProcessor", "getWorld")
+                || calls(bridge, "playerMapKey", "xaero/map/MapProcessor", "getNewWorld")
+                || calls(bridge, "playerMapKey", "xaero/map/MapProcessor", "isWaitingForWorldUpdate")
+                || calls(bridge, "playerMapKey", "xaero/map/world/MapWorld", "getCurrentMultiworld"))
+            failures.add("Player map identity must validate mainWorld and the actual dimension, independent of renderer updates or the viewed map");
+        ClassModel nativeWorld = load("xaero/map/world/MapWorld"), nativeDimension = load("xaero/map/world/MapDimension");
+        if (!usesField(nativeWorld, "getPlayerMapKey", "xaero/map/MapProcessor", "mainWorld")
+                || !calls(nativeWorld, "getPlayerMapKey", "xaero/map/world/MapDimension", "getPlayerMapKey")
+                || !usesField(nativeDimension, "getPlayerMapKey", "xaero/map/world/MapDimension", "confirmedMultiworld")
+                || !calls(nativeDimension, "getPlayerMapKey", "xaero/map/world/MapDimension", "getFutureAutoMultiworld")
+                || calls(nativeDimension, "getPlayerMapKey", "xaero/map/world/MapDimension", "getCurrentMultiworld"))
+            failures.add("Xaero player map identity contract changed; inspect automatic and confirmed multiworld selection before adapting");
+        ClassModel nativeProcessor = load("xaero/map/MapProcessor");
+        if (!usesField(nativeProcessor, "confirmMultiworld", "xaero/map/MapProcessor", "mainWorld")
+                || !calls(nativeProcessor, "confirmMultiworld", "xaero/map/world/MapWorld", "getPotentialDimId")
+                || !calls(nativeProcessor, "confirmMultiworld", "xaero/map/world/MapWorld", "getCurrentDimension")
+                || !calls(nativeProcessor, "confirmMultiworld", "xaero/map/world/MapDimension", "confirmMultiworldUnsynced"))
+            failures.add("Xaero native player map confirmation no longer checks the live dimension before confirming the selected map");
         if (!calls(map, "extractRenderState", "xaero/map/highlight/DimensionHighlighterHandler", "getBlockHighlightBluntTooltip")
                 || !calls(map, "extractRenderState", "xaero/lib/client/gui/widget/Tooltip", "drawBox"))
             failures.add("Native map hover must render the full project tooltip through Xaero's tooltip box");
         verifyMixin("HighlighterRegistryMixin", "xaero/map/highlight/HighlighterRegistry", "end()V", "HEAD", "registerHighlighter", failures);
         verifyMixin("MapMenuMixin", "xaero/map/gui/GuiMap", "getRightClickOptions()Ljava/util/ArrayList;", "RETURN", "addMapOptions", failures);
         String metadata = resource("fabric.mod.json");
-        String mixins = resource("ohmytown.mixins.json");
-        if (!metadata.contains("\"ohmytown.mixins.json\"") || !mixins.contains("\"HighlighterRegistryMixin\"") || !mixins.contains("\"MapMenuMixin\"")
-                || !mixins.contains("\"dev.ohmytown.mixin\"") || !mixins.matches("(?s).*\"required\"\\s*:\\s*true.*"))
+        String mixins = resource("yetanothertown.mixins.json");
+        if (!metadata.contains("\"yetanothertown.mixins.json\"") || !mixins.contains("\"HighlighterRegistryMixin\"") || !mixins.contains("\"MapMenuMixin\"")
+                || !mixins.contains("\"dev.yetanothertown.mixin\"") || !mixins.matches("(?s).*\"required\"\\s*:\\s*true.*"))
             failures.add("Required native map mixins are not declared in the packaged Fabric metadata");
 
         boolean chunkSelection = false;
@@ -142,13 +161,20 @@ public final class VerifyLinks {
         if (!chunkSelection) failures.add("Native right-drag selection no longer converts block coordinates with signed >> 4; inspect units before adapting");
     }
 
+    private static boolean usesField(ClassModel model, String methodName, String owner, String fieldName) {
+        if (model == null) return false;
+        return model.methods().stream().filter(method -> method.methodName().equalsString(methodName)).flatMap(method -> method.code().stream())
+                .flatMap(code -> code.elementList().stream()).anyMatch(element -> element instanceof FieldInstruction field
+                        && field.owner().asInternalName().equals(owner) && field.name().equalsString(fieldName));
+    }
+
     private void verifyMixin(String name, String target, String method, String location, String hook, List<String> failures) throws IOException {
-        ClassModel model = load("dev/ohmytown/mixin/" + name);
+        ClassModel model = load("dev/yetanothertown/mixin/" + name);
         boolean targetsNative = model != null && annotationStrings(model, "Lorg/spongepowered/asm/mixin/Mixin;").contains(target.replace('/', '.'));
         boolean injects = false;
         if (model != null) for (var member : model.methods()) {
             Set<String> values = annotationStrings(member, "Lorg/spongepowered/asm/mixin/injection/Inject;");
-            if (values.contains(method) && values.contains(location) && calls(model, member.methodName().stringValue(), "dev/ohmytown/Bootstrap", "mapHook")) injects = true;
+            if (values.contains(method) && values.contains(location) && calls(model, member.methodName().stringValue(), "dev/yetanothertown/Bootstrap", "mapHook")) injects = true;
         }
         boolean dispatches = false;
         if (model != null) for (var entry : model.constantPool()) if (entry instanceof Utf8Entry text && text.equalsString(hook)) dispatches = true;
@@ -196,7 +222,7 @@ public final class VerifyLinks {
 
     private boolean scoped(String name) {
         return name.startsWith("net/minecraft/") || name.startsWith("net/fabricmc/")
-                || name.startsWith("xaero/") || name.startsWith("com/mojang/") || name.startsWith("com/terraformersmc/modmenu/") || name.startsWith("dev/ohmytown/");
+                || name.startsWith("xaero/") || name.startsWith("com/mojang/") || name.startsWith("com/terraformersmc/modmenu/") || name.startsWith("dev/yetanothertown/");
     }
 
     private ClassModel load(String name) throws IOException {

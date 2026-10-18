@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const cache = path.join(root, '.cache', 'dependencies');
 export const versions = ['26.3', '26.2', '26.1.2'];
-const headers = { 'User-Agent': 'OhMyTown/1.0.0 (local development)' };
+const headers = { 'User-Agent': 'YetAnotherTown/1.0.0 (local development)' };
 export async function download(url, target, checksum, algorithm = 'sha1') {
   await mkdir(path.dirname(target), { recursive: true });
   try {

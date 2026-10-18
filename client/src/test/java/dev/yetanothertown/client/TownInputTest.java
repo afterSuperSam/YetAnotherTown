@@ -1,4 +1,4 @@
-package dev.ohmytown.client;
+package dev.yetanothertown.client;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.KeyMapping;
@@ -29,10 +29,10 @@ public final class TownInputTest {
         require(mappings[0].consumeClick(), "Physical K did not reach the town menu mapping");
         KeyMapping.click(InputConstants.getKey("key.keyboard.x"));
         require(mappings[1].consumeClick(), "Physical X did not reach the current project mapping");
-        require(mappings[0].getCategory().id().toString().equals("ohmytown:general"), "Dedicated vanilla controls category missing");
-        require(mappings[1].getCategory().equals(mappings[0].getCategory()), "Both controls must share the Oh My Town category");
-        require(KeyMapping.get("key.ohmytown.open") == mappings[0], "Town action missing from the vanilla mapping registry");
-        require(KeyMapping.get("key.ohmytown.project") == mappings[1], "Nearby action missing from the vanilla mapping registry");
+        require(mappings[0].getCategory().id().toString().equals("yetanothertown:general"), "Dedicated vanilla controls category missing");
+        require(mappings[1].getCategory().equals(mappings[0].getCategory()), "Both controls must share the Yet Another Town category");
+        require(KeyMapping.get("key.yetanothertown.open") == mappings[0], "Town action missing from the vanilla mapping registry");
+        require(KeyMapping.get("key.yetanothertown.project") == mappings[1], "Nearby action missing from the vanilla mapping registry");
 
         mappings[0].setKey(InputConstants.getKey("key.keyboard.j"));
         KeyMapping.resetMapping();

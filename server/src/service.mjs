@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 export const DEFAULT_CONFIG = Object.freeze({
-  host: '127.0.0.1', port: 37841, dataFile: './data/ohmytown.json', sessionHours: 168,
+  host: '127.0.0.1', port: 37841, dataFile: './data/yetanothertown.json', sessionHours: 168,
   requestTimeoutSeconds: 15, maxBodyBytes: 65536,
   requestsPerMinute: 120, authenticationAttemptsPerMinute: 10,
   maximumRegionChunks: 65536,
@@ -191,10 +191,10 @@ export class TownService {
         logo: text(payload.logo, '标志', 512, true), server: text(payload.server, '服务器', 200, true),
         ownerId: player.id, password: hashPassword(payload.password), createdAt: timestamp,
         roles: [
-          { id: 'newcomer', name: '新人', permissions: [] },
-          { id: 'member', name: '成员', permissions: [...MEMBER_PERMISSIONS] },
-          { id: 'manager', name: '管理', permissions: Object.keys(PERMISSIONS) },
-          { id: 'mayor', name: '镇长', permissions: Object.keys(PERMISSIONS) },
+          { id: 'newcomer', icon: 'minecraft:dirt', name: '新人', permissions: [] },
+          { id: 'member', icon: 'minecraft:cobblestone', name: '成员', permissions: [...MEMBER_PERMISSIONS] },
+          { id: 'manager', icon: 'minecraft:iron_block', name: '管理', permissions: Object.keys(PERMISSIONS) },
+          { id: 'mayor', icon: 'minecraft:emerald_block', name: '镇长', permissions: Object.keys(PERMISSIONS) },
         ],
         members: [{ playerId: player.id, name: player.name, roleId: 'mayor', joinedAt: timestamp }],
         worlds: [initialWorld], projects: [], tickets: [],
@@ -296,12 +296,18 @@ export class TownService {
     if (action === 'role.save') {
       requirePermission('roles.manage');
       const existing = payload.id ? find('roles') : null;
-      check(!existing || !['mayor', 'newcomer'].includes(existing.id), 'forbidden', '镇长与新人权限组不可修改');
+      const selectedPermissions = Object.hasOwn(payload, 'permissions') ? payload.permissions : existing?.permissions;
+      const name = text(Object.hasOwn(payload, 'name') ? payload.name : existing?.name, '权限组名称', 32);
+      if (existing && ['mayor', 'newcomer'].includes(existing.id)) {
+        check(name === existing.name && Array.isArray(selectedPermissions) && selectedPermissions.length === existing.permissions.length && existing.permissions.every(permission => selectedPermissions.includes(permission)), 'forbidden', '镇长与新人权限组只能修改图标');
+      }
       if (existing && town.members.some(member => member.roleId === existing.id && member.playerId !== player.id)) requirePermission('members.manage');
-      check(Array.isArray(payload.permissions), 'invalid_argument', '权限列表无效');
-      for (const permission of payload.permissions) check(typeof permission === 'string' && permission in PERMISSIONS && has(permission), 'forbidden', '不能授予自己没有的权限');
+      check(Array.isArray(selectedPermissions), 'invalid_argument', '权限列表无效');
+      for (const permission of selectedPermissions) check(typeof permission === 'string' && permission in PERMISSIONS && has(permission), 'forbidden', '不能授予自己没有的权限');
       if (existing) for (const permission of existing.permissions) check(has(permission), 'forbidden', '不能管理高于自己的权限组');
-      const role = { id: existing?.id ?? identifier(), name: text(payload.name, '权限组名称', 32), permissions: [...new Set(payload.permissions)] };
+      const icon = text(Object.hasOwn(payload, 'icon') ? payload.icon : existing?.icon ?? 'minecraft:cobblestone', '权限组图标', 128);
+      check(DIMENSION.test(icon), 'invalid_argument', '权限组图标必须使用 Minecraft 资源 ID 格式');
+      const role = { id: existing?.id ?? identifier(), name, icon, permissions: [...new Set(selectedPermissions)] };
       if (existing) Object.assign(existing, role); else town.roles.push(role);
       return done(role);
     }

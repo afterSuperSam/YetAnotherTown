@@ -1,4 +1,4 @@
-package dev.ohmytown.client;
+package dev.yetanothertown.client;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class TownGateway {
     public static final TownGateway INSTANCE = new TownGateway();
     private static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
-    private static final System.Logger LOGGER = System.getLogger("Oh My Town");
+    private static final System.Logger LOGGER = System.getLogger("Yet Another Town");
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private final AtomicLong selection = new AtomicLong();
     private final AtomicLong authentication = new AtomicLong();
@@ -64,7 +64,7 @@ public final class TownGateway {
     }
 
     public synchronized void initialize(Path directory) {
-        configurationPath = directory.resolve("ohmytown.json");
+        configurationPath = directory.resolve("yetanothertown.json");
         try {
             if (Files.exists(configurationPath)) {
                 JsonObject parsed = JSON.fromJson(Files.readString(configurationPath), JsonObject.class);

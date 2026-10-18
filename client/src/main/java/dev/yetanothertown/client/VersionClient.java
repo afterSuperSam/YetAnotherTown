@@ -1,4 +1,4 @@
-package dev.ohmytown.client;
+package dev.yetanothertown.client;
 
 import com.google.gson.JsonObject;
 import com.mojang.blaze3d.platform.InputConstants;
@@ -21,12 +21,12 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.List;
 
-import static dev.ohmytown.client.TownGateway.object;
+import static dev.yetanothertown.client.TownGateway.object;
 
 /** 统一入口、当前游戏身份与版本间客户端生命周期。 */
 public final class VersionClient {
-    private static final System.Logger LOGGER = System.getLogger("Oh My Town");
-    private static final KeyMapping.Category KEY_CATEGORY = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("ohmytown", "general"));
+    private static final System.Logger LOGGER = System.getLogger("Yet Another Town");
+    private static final KeyMapping.Category KEY_CATEGORY = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("yetanothertown", "general"));
     private static KeyMapping openKey;
     private static KeyMapping projectKey;
     private static long nextRefresh;
@@ -40,6 +40,8 @@ public final class VersionClient {
     private static Field screenField;
     private static Object screenOwner;
     private static java.util.function.Supplier<net.minecraft.world.entity.player.PlayerSkin> skin;
+    private static final java.util.Map<String, java.util.function.Supplier<net.minecraft.world.entity.player.PlayerSkin>> memberSkins = new java.util.HashMap<>();
+    private static String avatarTown = "";
     private static JsonObject navigation;
     private static String navigationTown = "";
     private static String navigationWorld = "";
@@ -60,7 +62,7 @@ public final class VersionClient {
         ClientLifecycleEvents.CLIENT_STARTED.register(client -> {
             initializeScreens(client);
             skin = client.getSkinManager().createLookup(client.getGameProfile(), false);
-            LOGGER.log(System.Logger.Level.INFO, "Oh My Town client initialized");
+            LOGGER.log(System.Logger.Level.INFO, "Yet Another Town client initialized");
         });
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             long now = System.nanoTime();
@@ -98,29 +100,28 @@ public final class VersionClient {
 
     static KeyMapping[] createKeyMappings() {
         return new KeyMapping[] {
-            new KeyMapping("key.ohmytown.open", InputConstants.KEY_K, KEY_CATEGORY),
-            new KeyMapping("key.ohmytown.project", InputConstants.KEY_X, KEY_CATEGORY)
+            new KeyMapping("key.yetanothertown.open", InputConstants.KEY_K, KEY_CATEGORY),
+            new KeyMapping("key.yetanothertown.project", InputConstants.KEY_X, KEY_CATEGORY)
         };
     }
 
     public static Screen createConfigScreen(Screen parent) {
         TownGateway gateway = TownGateway.get();
         var settings = gateway.config();
-        return new TownForm(parent, "Oh My Town · 配置", List.of(
+        return new TownForm(parent, "配置", List.of(
                 TownForm.Field.text("endpoint", "服务地址", settings.endpoint),
                 TownForm.Field.number("entrySubtitleSeconds", "进入项目字幕（秒，0关闭）", settings.entrySubtitleSeconds),
                 TownForm.Field.number("entryCooldownSeconds", "重复进入提示间隔（秒）", settings.entryCooldownSeconds),
                 TownForm.Field.number("pollIntervalSeconds", "资料刷新间隔（秒）", settings.pollIntervalSeconds),
                 TownForm.Field.toggle("animationEnabled", "界面动画", settings.animationEnabled),
-                TownForm.Field.toggle("projectOverlayEnabled", "在 Xaero 地图显示项目", settings.projectOverlayEnabled)),
-                List.of("按键在原版设置的 Oh My Town 分类中修改，跟随游戏设置保存。"),
-                List.of(new TownForm.Action("打开原版按键绑定设置", () -> show(new KeyBindsScreen(currentScreen(), Minecraft.getInstance().options))),
-                        new TownForm.Action("打开小镇协作主页", () -> show(new TownScreen(currentScreen())))),
+                TownForm.Field.toggle("projectOverlayEnabled", "在 Xaero 地图显示项目", settings.projectOverlayEnabled),
+                TownForm.Field.action("keyBindings", "打开原版按键绑定", () -> show(new KeyBindsScreen(currentScreen(), Minecraft.getInstance().options)))),
+                List.of(), List.of(),
                 values -> {
                     gateway.configure(values.get("endpoint").getAsString(), values.get("entrySubtitleSeconds").getAsInt(), values.get("entryCooldownSeconds").getAsInt(),
                             values.get("pollIntervalSeconds").getAsInt(), values.get("animationEnabled").getAsBoolean(), values.get("projectOverlayEnabled").getAsBoolean());
                     show(parent);
-                });
+                }).withBreadcrumbTitle();
     }
 
     private static void initializeScreens(Minecraft minecraft) {
@@ -193,25 +194,50 @@ public final class VersionClient {
     static String projectKeyLabel() { return projectKey == null ? "X" : projectKey.isUnbound() ? "" : projectKey.getTranslatedKeyMessage().getString(); }
 
     static void drawAvatar(GuiGraphicsExtractor graphics, int x, int y, int size) {
-        graphics.fill(x - 1, y - 1, x + size + 1, y + size + 1, TownScreen.ACCENT);
         if (skin == null) return;
-        Identifier texture = skin.get().body().texturePath();
+        drawSkin(graphics, skin.get().body().texturePath(), x, y, size);
+    }
+
+    /** 在线成员使用服务器皮肤，离线成员通过原版缓存提供头像与默认皮肤。 */
+    static void drawAvatar(GuiGraphicsExtractor graphics, String playerId, String name, int x, int y, int size) {
+        String compactId = playerId.replace("-", "");
+        if (!compactId.matches("[a-fA-F0-9]{32}")) { TownStyle.icon(graphics, 3, x + size / 2 - 4, y + size / 2 - 4, TownStyle.MUTED); return; }
+        java.util.UUID id = new java.util.UUID(Long.parseUnsignedLong(compactId.substring(0, 16), 16), Long.parseUnsignedLong(compactId.substring(16), 16));
+        Minecraft client = Minecraft.getInstance();
+        var connection = client.getConnection();
+        var online = connection == null ? null : connection.getPlayerInfo(id);
+        if (online != null) { drawSkin(graphics, online.getSkin().body().texturePath(), x, y, size); return; }
+        String scope = TownGateway.get().config().endpoint + "#" + TownGateway.get().townId;
+        if (!avatarTown.equals(scope)) { memberSkins.clear(); avatarTown = scope; }
+        var lookup = memberSkins.computeIfAbsent(compactId, ignored -> client.getSkinManager().createLookup(new com.mojang.authlib.GameProfile(id, name), false));
+        drawSkin(graphics, lookup.get().body().texturePath(), x, y, size);
+    }
+
+    private static void drawSkin(GuiGraphicsExtractor graphics, Identifier texture, int x, int y, int size) {
+        graphics.fill(x - 1, y - 1, x + size + 1, y + size + 1, TownScreen.ACCENT);
         graphics.blit(RenderPipelines.GUI_TEXTURED, texture, x, y, 8, 8, size, size, 8, 8, 64, 64);
         graphics.blit(RenderPipelines.GUI_TEXTURED, texture, x, y, 40, 8, size, size, 8, 8, 64, 64);
     }
 
     static void drawLogo(GuiGraphicsExtractor graphics, String identifier, int x, int y) {
+        drawLogo(graphics, identifier, x, y, 28);
+    }
+
+    static void drawLogo(GuiGraphicsExtractor graphics, String identifier, int x, int y, int size) {
         if (identifier.startsWith("texture:")) {
             Identifier texture = Identifier.tryParse(identifier.substring("texture:".length()));
-            if (texture != null) { graphics.blit(RenderPipelines.GUI_TEXTURED, texture, x, y, 0, 0, 28, 28, 28, 28); return; }
+            if (texture != null) { graphics.blit(RenderPipelines.GUI_TEXTURED, texture, x, y, 0, 0, size, size, size, size); return; }
         }
         if (Minecraft.getInstance().level == null) {
-            TownStyle.icon(graphics, 0, x + 10, y + 10, TownStyle.ACCENT);
+            TownStyle.icon(graphics, 0, x + size / 2 - 4, y + size / 2 - 4, TownStyle.ACCENT);
             return;
         }
         Identifier id = Identifier.tryParse(identifier);
         var item = id == null ? Items.OAK_SAPLING : BuiltInRegistries.ITEM.getValue(id);
-        graphics.item(new ItemStack(item == null || item == Items.AIR ? Items.OAK_SAPLING : item), x + 6, y + 6);
+        graphics.pose().pushMatrix();
+        graphics.pose().translate(x + 4, y + 4).scale(Math.max(8, size - 8) / 16f);
+        graphics.item(new ItemStack(item == null || item == Items.AIR ? Items.OAK_SAPLING : item), 0, 0);
+        graphics.pose().popMatrix();
     }
 
     static boolean navigate(JsonObject record) {

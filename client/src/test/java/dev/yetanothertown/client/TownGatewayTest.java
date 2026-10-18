@@ -1,4 +1,4 @@
-package dev.ohmytown.client;
+package dev.yetanothertown.client;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -21,9 +21,9 @@ public final class TownGatewayTest {
     }
     public static void main(String[] arguments) throws Exception {
         TownGateway gateway = TownGateway.INSTANCE;
-        var directory = Files.createTempDirectory("omt-gateway-test-");
+        var directory = Files.createTempDirectory("yat-gateway-test-");
         gateway.initialize(directory);
-        require(Files.exists(directory.resolve("ohmytown.json")), "default configuration saved");
+        require(Files.exists(directory.resolve("yetanothertown.json")), "default configuration saved");
         for (String invalid : new String[]{"http://example.com", "ftp://localhost", "https://example.com/api", "http://", "https://name:secret@example.com", "https://example.com:0", "https://example.com:65536"}) {
             boolean rejected = false;
             try { gateway.configure(invalid); } catch (IllegalArgumentException exception) { rejected = true; }
@@ -140,7 +140,7 @@ public final class TownGatewayTest {
             require(gateway.isCurrent(connectedContext), "visual settings preserve operation context");
             require(gateway.loggedIn(), "visual and polling settings do not log out the player");
             require(gateway.config().entrySubtitleSeconds == 4 && gateway.config().entryCooldownSeconds == 8 && gateway.config().pollIntervalSeconds == 5 && !gateway.config().animationEnabled && !gateway.config().projectOverlayEnabled, "configuration screen settings are applied");
-            require(Files.readString(directory.resolve("ohmytown.json")).contains("personal-server|first"), "saving settings retains personal map bindings");
+            require(Files.readString(directory.resolve("yetanothertown.json")).contains("personal-server|first"), "saving settings retains personal map bindings");
             boolean rejectedSettings = false;
             try { gateway.configure(endpoint, 11, 8, 5, false, true); } catch (IllegalArgumentException exception) { rejectedSettings = true; }
             require(rejectedSettings && gateway.config().entrySubtitleSeconds == 4 && !gateway.config().projectOverlayEnabled, "invalid settings cannot partially overwrite configuration");
@@ -211,7 +211,7 @@ public final class TownGatewayTest {
             loginRelease.countDown();
             login.handle((value, error) -> null).get(5, TimeUnit.SECONDS);
             require(!gateway.loggedIn(), "logout cancels a pending login");
-            require(!Files.readString(directory.resolve("ohmytown.json")).contains("test-token"), "session token never persisted");
+            require(!Files.readString(directory.resolve("yetanothertown.json")).contains("test-token"), "session token never persisted");
         } finally {
             slowRelease.countDown();
             refreshRelease.countDown();

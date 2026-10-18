@@ -1,4 +1,4 @@
-package dev.ohmytown.client;
+package dev.yetanothertown.client;
 
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.resources.Identifier;
@@ -101,7 +101,7 @@ final class TownStyle {
 
     static String title() {
         String name = TownScreen.stringValue(TownScreen.objectValue(TownGateway.get().snapshot, "town"), "name");
-        return "Oh My Town" + (name.isBlank() ? "" : " · " + name);
+        return "Yet Another Town" + (name.isBlank() ? "" : " · " + name);
     }
 
     static Button button(String label, int x, int y, int width, Runnable action) {

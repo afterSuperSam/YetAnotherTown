@@ -1,6 +1,6 @@
 {
-  "name": "ohmytown",
-  "version": "1.0.0-alpha.6",
+  "name": "yetanothertown",
+  "version": "1.0.0-alpha.7",
   "private": true,
   "type": "module",
   "scripts": {

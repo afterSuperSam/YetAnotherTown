@@ -1,4 +1,4 @@
-# Oh My Town 领域语言
+# Yet Another Town 领域语言
 
 小镇成员在游戏内登记建设、协作工程并查阅公共信息。
 

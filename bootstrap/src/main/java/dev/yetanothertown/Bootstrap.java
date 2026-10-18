@@ -1,4 +1,4 @@
-package dev.ohmytown;
+package dev.yetanothertown;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.loader.api.FabricLoader;
@@ -8,10 +8,10 @@ public final class Bootstrap implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         try {
-            Class.forName("dev.ohmytown." + adapter() + ".VersionClient")
+            Class.forName("dev.yetanothertown." + adapter() + ".VersionClient")
                     .getMethod("initialize").invoke(null);
         } catch (ReflectiveOperationException exception) {
-            throw new IllegalStateException("Oh My Town 客户端初始化失败", exception);
+            throw new IllegalStateException("Yet Another Town 客户端初始化失败", exception);
         }
     }
 
@@ -22,7 +22,7 @@ public final class Bootstrap implements ClientModInitializer {
             case "26.3" -> "v263";
             case "26.2" -> "v262";
             case "26.1.2" -> "v2612";
-            default -> throw new IllegalStateException("Oh My Town 不支持当前 Minecraft 版本：" + version);
+            default -> throw new IllegalStateException("Yet Another Town 不支持当前 Minecraft 版本：" + version);
         };
     }
 
@@ -31,7 +31,7 @@ public final class Bootstrap implements ClientModInitializer {
         try {
             Class<?>[] parameters = new Class<?>[arguments.length];
             java.util.Arrays.fill(parameters, Object.class);
-            Class.forName("dev.ohmytown." + adapter() + ".XaeroBridge").getMethod(method, parameters).invoke(null, arguments);
+            Class.forName("dev.yetanothertown." + adapter() + ".XaeroBridge").getMethod(method, parameters).invoke(null, arguments);
         } catch (ReflectiveOperationException exception) {
             throw new IllegalStateException("Xaero 地图扩展接口不兼容：" + method, exception);
         }

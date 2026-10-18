@@ -1,4 +1,4 @@
-package dev.ohmytown.client;
+package dev.yetanothertown.client;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -8,7 +8,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.resources.Identifier;
 
-import static dev.ohmytown.client.TownScreen.*;
+import static dev.yetanothertown.client.TownScreen.*;
 
 /** 区域进入字幕、当前项目详情与显式选择的方向导航。 */
 public final class TownHud {
@@ -25,7 +25,7 @@ public final class TownHud {
     private TownHud() { }
 
     static void initialize() {
-        HudElementRegistry.attachElementBefore(VanillaHudElements.CHAT, Identifier.fromNamespaceAndPath("ohmytown", "project"), (graphics, tracker) -> draw(graphics));
+        HudElementRegistry.attachElementBefore(VanillaHudElements.CHAT, Identifier.fromNamespaceAndPath("yetanothertown", "project"), (graphics, tracker) -> draw(graphics));
     }
 
     /** 区块或资料变化时重新命中项目；字幕不依赖网络轮询或每帧遍历。 */

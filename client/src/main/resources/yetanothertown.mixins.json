@@ -1,7 +1,7 @@
 {
   "required": true,
   "minVersion": "0.8",
-  "package": "dev.ohmytown.mixin",
+  "package": "dev.yetanothertown.mixin",
   "compatibilityLevel": "JAVA_25",
   "client": ["HighlighterRegistryMixin", "MapMenuMixin"],
   "injectors": { "defaultRequire": 1 }

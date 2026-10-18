@@ -1,4 +1,4 @@
-package dev.ohmytown.client;
+package dev.yetanothertown.client;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -15,7 +15,7 @@ import xaero.map.highlight.HighlighterRegistry;
 import xaero.map.world.MapDimension;
 import xaero.map.world.MapWorld;
 
-import static dev.ohmytown.client.TownScreen.*;
+import static dev.yetanothertown.client.TownScreen.*;
 
 /** 将小镇区块交给 Xaero 的底图纹理管线，并为原生悬浮提示提供资料。 */
 final class ProjectHighlighter extends ChunkHighlighter {

@@ -1,4 +1,4 @@
-package dev.ohmytown.client;
+package dev.yetanothertown.client;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -31,11 +31,11 @@ import xaero.hud.minimap.waypoint.WaypointPurpose;
 import xaero.common.minimap.waypoints.Waypoint;
 import xaero.hud.minimap.waypoint.set.WaypointSet;
 
-import static dev.ohmytown.client.TownScreen.*;
+import static dev.yetanothertown.client.TownScreen.*;
 
 /** 接入 Xaero 原生高亮、右键区块选区与个人历史底图。 */
 public final class XaeroBridge {
-    private static final System.Logger LOGGER = System.getLogger("Oh My Town");
+    private static final System.Logger LOGGER = System.getLogger("Yet Another Town");
     private static Waypoint navigationWaypoint;
     private static WaypointSet navigationSet;
     private static Field selectionField;
@@ -76,14 +76,13 @@ public final class XaeroBridge {
         return client.level == null ? "" : playerMapKey(client.level.dimension().identifier().toString());
     }
 
-    /** 切维度期间等待游戏世界和 Xaero 玩家实例全部同步后才允许自动绑定。 */
+    /** 玩家身份取 Xaero 主线程世界；后台绘图切换和历史底图不参与身份判断。 */
     public static String playerMapKey(String expectedDimension) {
         Minecraft client = Minecraft.getInstance();
         MapProcessor processor = processor();
         if (client.player == null || client.level == null || processor == null || !processor.isMapWorldUsable()
-                || processor.isWaitingForWorldUpdate() || processor.getWorld() != client.level || processor.getNewWorld() != client.level
-                || !client.level.dimension().identifier().toString().equals(expectedDimension)
-                || !client.player.level().dimension().equals(client.level.dimension())) return "";
+                || processor.mainWorld != client.level || client.player.level() != client.level
+                || !client.level.dimension().identifier().toString().equals(expectedDimension)) return "";
         MapWorld world = processor.getMapWorld();
         MapConnectionNode playerMap = world == null ? null : world.getPlayerMapKey();
         return playerMap == null || playerMap.getDimId() == null || !playerMap.getDimId().identifier().toString().equals(expectedDimension)
@@ -99,10 +98,9 @@ public final class XaeroBridge {
         JsonObject world = selectedWorld();
         MapProcessor processor = processor();
         if (world.isEmpty() || archived(world) || processor == null || !processor.isMapWorldUsable()) return false;
-        MapWorld mapWorld = processor.getMapWorld();
-        MapConnectionNode playerMap = mapWorld == null ? null : mapWorld.getPlayerMapKey();
-        if (playerMap == null || playerMap.getDimId() == null) return false;
-        String dimension = playerMap.getDimId().identifier().toString();
+        Minecraft client = Minecraft.getInstance();
+        if (client.level == null) return false;
+        String dimension = client.level.dimension().identifier().toString();
         String key = playerMapKey(dimension);
         return !key.isEmpty() && TownGateway.get().getBoundMapKey(dimension).equals(key);
     }
@@ -137,6 +135,7 @@ public final class XaeroBridge {
             JsonObject chunks = selectionChunks(selection, dimension.identifier().toString());
             if (map.getMapProcessor() != processor() || !matchingMap(dimension)) {
                 options.add(option(map, options.size(), "小镇工程：当前底图未关联所选周目", () -> {}).setActive(false));
+                addBindingOption(map, options);
                 return;
             }
             TownGateway.Context context = gateway.context();
@@ -154,6 +153,20 @@ public final class XaeroBridge {
                 if (map instanceof BoundMap bound) bound.suspendForForm();
                 TownScreen.createProject(map, chunks.deepCopy());
             }).setActive(reason.isEmpty()));
+            if (!isCurrentWorld() && !archived(selectedWorld())) {
+                if (canConfirmPlayerMap(map, dimension)) options.add(option(map, options.size(), "确认当前地图为所在世界", () -> {
+                    if (!validMenu(map, context, world, mapKey, dimension) || !canConfirmPlayerMap(map, dimension)) return;
+                    MapDimension mapDimension = world.getDimension(dimension);
+                    if (!map.getMapProcessor().confirmMultiworld(mapDimension)) {
+                        gateway.status = "Xaero 暂时无法确认此地图，请等待地图加载完成后重试";
+                        return;
+                    }
+                    if (map instanceof BoundMap bound) bound.keepConfirmedMap(mapDimension);
+                    gateway.status = isCurrentWorld() ? "已在 Xaero 确认当前玩家地图，可重新右键创建工程" : "Xaero 已接受确认，请等待地图同步后重新右键";
+                    ProjectHighlighter.refresh();
+                }));
+                addBindingOption(map, options);
+            }
             if (!overlaps.isEmpty() && !gateway.config().projectOverlayEnabled) options.add(option(map, options.size(), "显示选区冲突区域", () -> {
                 gateway.setProjectOverlayEnabled(true);
                 ProjectHighlighter.refresh();
@@ -188,6 +201,20 @@ public final class XaeroBridge {
         };
     }
 
+    private static void addBindingOption(GuiMap map, ArrayList<RightClickOption> options) {
+        TownGateway gateway = TownGateway.get();
+        TownGateway.Context context = gateway.context();
+        MapProcessor processor = map.getMapProcessor();
+        MapWorld world = processor.getMapWorld();
+        String key = currentMapKey(), dimension = currentMapDimension();
+        options.add(option(map, options.size(), "前往绑定当前地图", () -> {
+            if (!gateway.isCurrent(context) || processor != processor() || processor.getMapWorld() != world
+                    || !key.equals(currentMapKey()) || !dimension.equals(currentMapDimension())) return;
+            if (map instanceof BoundMap bound) bound.suspendForForm();
+            TownScreen.openMapBinding(map);
+        }));
+    }
+
     private static boolean validMenu(GuiMap map, TownGateway.Context context, MapWorld world, String key, ResourceKey<Level> dimension) {
         return TownGateway.get().isCurrent(context) && map.getMapProcessor() == processor()
                 && map.getMapProcessor().getMapWorld() == world && key.equals(currentMapKey())
@@ -197,7 +224,21 @@ public final class XaeroBridge {
     private static String creationBlockReason() {
         if (archived(selectedWorld())) return "历史周目只读";
         if (!contains(arrayValue(TownGateway.get().snapshot, "permissions"), "project.create")) return "当前成员只读";
-        return isCurrentWorld() ? "" : "请进入此周目的游戏世界";
+        if (isCurrentWorld()) return "";
+        if (Minecraft.getInstance().player == null) return "请先进入此周目的游戏世界";
+        return playerMapKey().isEmpty() ? "Xaero 尚未确认玩家地图，请先确认当前实例" : "玩家地图与此周目绑定不同，请核对地图绑定";
+    }
+
+    /** 只由玩家显式确认已绑定的当前维度，归档、只读和切换中的底图不提供入口。 */
+    private static boolean canConfirmPlayerMap(GuiMap map, ResourceKey<Level> dimension) {
+        Minecraft client = Minecraft.getInstance();
+        MapProcessor processor = map.getMapProcessor();
+        if (archived(selectedWorld()) || !contains(arrayValue(TownGateway.get().snapshot, "permissions"), "project.create")
+                || client.player == null || client.level == null || processor != processor() || processor.mainWorld != client.level
+                || client.player.level() != client.level || !client.level.dimension().equals(dimension) || !matchingMap(dimension)) return false;
+        MapDimension mapDimension = processor.getMapWorld().getDimension(dimension);
+        return mapDimension != null && mapDimension.getCurrentMultiworld() != null
+                && mapDimension.getCurrentMultiworld().equals(mapDimension.getFutureMultiworldUnsynced());
     }
 
     static JsonObject selectionChunks(MapTileSelection selection, String dimension) {
@@ -350,6 +391,10 @@ public final class XaeroBridge {
         private void suspendForForm() {
             suspendedForForm = true;
             suspendedMap = this;
+        }
+
+        private void keepConfirmedMap(MapDimension dimension) {
+            originalMaps.put(dimension, new MapState(dimension.getFutureCustomSelectedMultiworld(), dimension.futureMultiworldWritable));
         }
 
         private void finishViewing() {
