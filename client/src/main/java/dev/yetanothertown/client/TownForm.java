@@ -32,7 +32,10 @@ final class TownForm extends Screen {
         Field compact() { return new Field(key, label, initial, values, labels, number, true, multiline, icon, action); }
         static Field toggle(String key, String label, boolean value) { return choice(key, label, Boolean.toString(value), new String[]{"false", "true"}, new String[]{"关闭", "开启"}); }
     }
-    record Action(String label, Runnable run) { }
+    record Action(String label, Runnable run, java.util.function.Supplier<String> liveLabel) {
+        Action(String label, Runnable run) { this(label, run, null); }
+        @Override public String label() { return liveLabel == null ? label : liveLabel.get(); }
+    }
     private final Screen parent;
     private final List<Field> fields;
     private final List<String> description;
@@ -44,6 +47,7 @@ final class TownForm extends Screen {
     private final List<TextLine> labels = new ArrayList<>();
     private final Map<String, AbstractWidget> fieldWidgets = new LinkedHashMap<>();
     private final List<AbstractWidget> contentWidgets = new ArrayList<>();
+    private final Map<Button, Action> liveActions = new LinkedHashMap<>();
     private final List<AbstractWidget> focusOrder = new ArrayList<>();
     private final List<Integer> separators = new ArrayList<>();
     private int scroll;
@@ -79,6 +83,13 @@ final class TownForm extends Screen {
 
     TownForm withBreadcrumbTitle() { breadcrumbTitle = true; return this; }
 
+    @Override public void tick() {
+        liveActions.forEach((button, action) -> {
+            String label = action.label();
+            if (!button.getMessage().getString().equals(label)) button.setMessage(Component.literal(label));
+        });
+    }
+
     @Override
     protected void init() {
         rebuild();
@@ -92,6 +103,7 @@ final class TownForm extends Screen {
         clearWidgets();
         labels.clear();
         contentWidgets.clear();
+        liveActions.clear();
         focusOrder.clear();
         separators.clear();
         window = TownStyle.bounds(width, height, 440, 320);
@@ -127,10 +139,12 @@ final class TownForm extends Screen {
             int actionWidth = pair ? halfWidth : contentWidth;
             Button actionButton = TownStyle.button(action.label(), contentLeft, y, actionWidth, () -> { if (!submitting && validContext()) action.run().run(); });
             actionButton.active = !submitting; addContentWidget(actionButton);
+            if (action.liveLabel() != null) liveActions.put(actionButton, action);
             if (pair) {
                 Action next = actions.get(index + 1);
                 Button nextButton = TownStyle.button(next.label(), contentLeft + actionWidth + 8, y, contentWidth - actionWidth - 8, () -> { if (!submitting && validContext()) next.run().run(); });
                 nextButton.active = !submitting; addContentWidget(nextButton);
+                if (next.liveLabel() != null) liveActions.put(nextButton, next);
             }
             index += pair ? 2 : 1;
             y += 26;

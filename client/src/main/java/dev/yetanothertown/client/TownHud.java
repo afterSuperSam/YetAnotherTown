@@ -51,7 +51,7 @@ public final class TownHud {
         long now = System.nanoTime();
         if (entry.enter(id, now, gateway.config().entryCooldownSeconds * 1_000_000_000L)) {
             entrySubtitle = true;
-            subtitle = "进入项目：" + stringValue(currentProject, "name");
+            subtitle = "进入项目：" + XaeroBridge.projectName(currentProject);
             subtitleUntil = now + gateway.config().entrySubtitleSeconds * 1_000_000_000L;
         } else if (entrySubtitle && !id.equals(entry.announced)) subtitleUntil = 0;
     }
@@ -119,7 +119,7 @@ public final class TownHud {
         }
         JsonObject target = VersionClient.navigation();
         if (target == null) return;
-        String name = stringValue(target, "name", stringValue(target, "title", "导航目标"));
+        String name = VersionClient.navigationName(target);
         String instruction;
         if (!stringValue(target, "dimension").equals(VersionClient.dimension())) instruction = "目标维度 " + stringValue(target, "dimension");
         else {

@@ -3,6 +3,7 @@ package dev.yetanothertown.client;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.KeyMapping;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import xaero.map.gui.MapTileSelection;
 
 /** 直接驱动原版按键分发与生产映射，不创建游戏实例或窗口。 */
@@ -33,6 +34,16 @@ public final class TownInputTest {
         require(lowerTooltip[0] >= 16 && lowerTooltip[0] + 280 <= 624 && lowerTooltip[1] >= 16 && lowerTooltip[1] + 160 <= 344, "Tooltip near bottom-right must retain space for its background inside the screen");
         int[] upperTooltip = ProjectHighlighter.tooltipPosition(640, 360, 280, 160, 0, 0);
         require(upperTooltip[0] == 16 && upperTooltip[1] == 16, "Tooltip near top-left must remain inside the screen");
+        java.util.function.ToIntFunction<String> pixels = text -> text.codePointCount(0, text.length()) * 8;
+        var shortTooltip = ProjectHighlighter.tooltipLayout("袭击塔", "DogSam", "一个袭击塔", "completed", 640, 360, 9, pixels);
+        require(shortTooltip.width() < 248 && shortTooltip.owner().equals(java.util.List.of("DogSam"))
+                && shortTooltip.introduction().equals(java.util.List.of("一个袭击塔")), "Short hover cards must fit their content without redundant field labels");
+        require(shortTooltip.ownerTop() >= shortTooltip.titleHeight() && shortTooltip.introductionTop() > shortTooltip.ownerTop(), "Hover title, player ID and introduction must occupy separate rows");
+        var longTooltip = ProjectHighlighter.tooltipLayout("长工程名称".repeat(20), "PlayerName1234567", "长简介😀".repeat(200), "planned", 160, 140, 9, pixels);
+        require(longTooltip.width() <= 128 && longTooltip.height() <= 108, "Wrapped hover card must fit the minimum supported viewport");
+        require(longTooltip.introduction().getLast().endsWith("…"), "Truncated introductions must indicate hidden content");
+        require(ProjectHighlighter.projectIcon("machine").equals("minecraft:redstone") && ProjectHighlighter.projectIcon("building").equals("minecraft:quartz_block")
+                && ProjectHighlighter.projectIcon("other").equals("minecraft:crafting_table"), "Project categories must use their designated vanilla items");
         var activeWorld = TownGateway.object("id", "0123456789abcdef01234567", "archived", false);
         require(XaeroBridge.associationBlockReason(activeWorld, true, "minecraft:overworld", "minecraft:overworld", "town", "town").isEmpty(), "A loaded current map must allow one-step association without an existing binding");
         activeWorld.addProperty("archived", true);
@@ -127,8 +138,90 @@ public final class TownInputTest {
         require(!tracker.enter("station", 26, 8), "Crossing a shared project boundary must still respect each project's cooldown");
         tracker.reset();
         require(tracker.enter("station", 25, 8), "Changing world context must reset entry detection");
+        settingsTests();
+        navigationTests();
         nativeAssociationTests();
         System.out.println("TownInput: " + checks + " checks passed through real vanilla dispatch and native selection; no game launched");
+    }
+
+    private static void settingsTests() {
+        var scope = new TownGateway.Context(3, 4, "http://town");
+        require(TownScreen.sameSettingsScope("12345678", "http://town", 3, "12345678", scope)
+                && TownScreen.sameSettingsScope("12345678", "http://town", 3, "12345678", new TownGateway.Context(3, 5, "http://town")), "Changing only the selected world must preserve same-town settings drafts");
+        require(!TownScreen.sameSettingsScope("12345678", "http://old", 3, "12345678", scope)
+                && !TownScreen.sameSettingsScope("12345678", "http://town", 2, "12345678", scope)
+                && !TownScreen.sameSettingsScope("87654321", "http://town", 3, "12345678", scope), "Settings drafts must not cross service, identity or town boundaries");
+        require(TownScreen.synchronizedSettingValue("old", "old", "remote").equals("remote"), "Clean settings fields must follow remote updates");
+        require(TownScreen.synchronizedSettingValue("edited", "old", "remote").equals("edited"), "Remote refresh must preserve locally edited settings fields");
+        var values = java.util.Map.of("name", "old", "introduction", "edited", "password", "", "unexpected", "ignore");
+        var baseline = java.util.Map.of("name", "old", "introduction", "previous", "password", "");
+        var snapshot = TownGateway.object("town", TownGateway.object("id", "12345678", "name", "remote"));
+        require(!TownScreen.validSettingsTown(new JsonObject(), "12345678") && TownScreen.changedTownSettings(values, baseline, new JsonObject(), "12345678").isEmpty(), "Unloaded town settings must not produce an update payload");
+        require(TownScreen.changedTownSettings(values, baseline, snapshot, "87654321").isEmpty(), "A snapshot for a different town must not produce settings changes");
+        require(TownScreen.changedTownSettings(values, baseline, snapshot, "12345678").equals(TownGateway.object("introduction", "edited")), "Saving a changed introduction must not overwrite a clean name updated remotely or send blank password/unknown fields");
+        require(TownScreen.changedTownSettings(java.util.Map.of("password", "secret123"), baseline, snapshot, "12345678").equals(TownGateway.object("password", "secret123")), "An explicitly entered password must be submitted");
+    }
+
+    /** 导航使用真实状态更新与清理路径，抵达区域边界就停止，不要求走到中心点。 */
+    private static void navigationTests() throws Exception {
+        TownGateway gateway = TownGateway.get();
+        JsonObject target = TownGateway.object("id", "station", "name", "车站", "worldId", gateway.worldId,
+                "dimension", "minecraft:overworld", "chunks", TownGateway.object("minX", -2, "maxX", 2, "minZ", -3, "maxZ", 3));
+        try {
+            seedNavigation(target);
+            var action = new TownForm.Action("导航到这里", () -> {}, () -> TownScreen.isNavigationTarget(target, VersionClient.navigation()) ? "停止导航" : "导航到这里");
+            require(action.label().equals("停止导航"), "A live navigation action must show cancellation while its target is active");
+            VersionClient.updateNavigation(true, "minecraft:overworld", -33, 0);
+            require(VersionClient.navigation() != null, "Navigation must remain active outside the target region");
+            VersionClient.updateNavigation(true, "minecraft:overworld", -32, 0);
+            require(VersionClient.navigation() == null, "Arriving at the target region edge must remove the navigation HUD");
+            require(action.label().equals("导航到这里"), "The same detail action must update its label after automatic arrival");
+            seedNavigation(target);
+            VersionClient.updateNavigation(true, "minecraft:overworld", 47, 63);
+            require(VersionClient.navigation() == null, "Maximum included chunk must complete navigation without reaching its center");
+            seedNavigation(target);
+            VersionClient.updateNavigation(true, "minecraft:overworld", 48, 63);
+            require(VersionClient.navigation() != null, "Adjacent positive chunk must not complete navigation");
+            VersionClient.updateNavigation(true, "minecraft:the_nether", 0, 0);
+            require(VersionClient.navigation() == null, "Changing dimension must clear stale navigation");
+            seedNavigation(target);
+            VersionClient.updateNavigation(false, "minecraft:overworld", -100, 0);
+            require(VersionClient.navigation() == null, "Losing the current map or connection must clear navigation");
+            seedNavigation(target);
+            nativeField(null, VersionClient.class, "navigationContext", new TownGateway.Context(-1, -1, "old-service"));
+            VersionClient.updateNavigation(true, "minecraft:overworld", -100, 0);
+            require(VersionClient.navigation() == null, "Navigation must not survive an identity or service context change");
+            var point = TownGateway.object("id", "ticket", "title", "维护位置", "worldId", gateway.worldId, "dimension", "minecraft:overworld", "x", -17, "z", 3);
+            seedNavigation(point);
+            VersionClient.updateNavigation(true, "minecraft:overworld", -18, 3);
+            require(VersionClient.navigation() != null, "Point navigation must remain until its destination block is reached");
+            VersionClient.updateNavigation(true, "minecraft:overworld", -17, 3);
+            require(VersionClient.navigation() == null, "Reaching a maintenance coordinate must complete navigation");
+            require(gateway.status.equals("已到达：维护位置"), "Arrival messages must use the ticket title for maintenance destinations");
+            var constructor = xaero.hud.minimap.waypoint.set.WaypointSet.class.getDeclaredConstructor(String.class);
+            constructor.setAccessible(true);
+            var waypoints = constructor.newInstance("test");
+            var own = (xaero.common.minimap.waypoints.Waypoint) allocateNative(xaero.common.minimap.waypoints.Waypoint.class);
+            var other = (xaero.common.minimap.waypoints.Waypoint) allocateNative(xaero.common.minimap.waypoints.Waypoint.class);
+            waypoints.add(own); waypoints.add(other);
+            seedNavigation(target);
+            nativeField(null, XaeroBridge.class, "navigationSet", waypoints);
+            nativeField(null, XaeroBridge.class, "navigationWaypoint", own);
+            VersionClient.stopNavigation(); VersionClient.stopNavigation();
+            require(VersionClient.navigation() == null && waypoints.size() == 1 && waypoints.get(0) == other, "Stopping navigation must remove only our native waypoint and remain safe when repeated");
+            waypoints.add(own); seedNavigation(target);
+            nativeField(null, XaeroBridge.class, "navigationSet", waypoints);
+            nativeField(null, XaeroBridge.class, "navigationWaypoint", own);
+            VersionClient.updateNavigation(true, "minecraft:overworld", 0, 0);
+            require(VersionClient.navigation() == null && waypoints.size() == 1, "Arrival must clear both HUD state and the actual native waypoint");
+        } finally { VersionClient.clearNavigation(); }
+    }
+
+    private static void seedNavigation(JsonObject target) throws Exception {
+        nativeField(null, VersionClient.class, "navigation", target);
+        nativeField(null, VersionClient.class, "navigationTown", TownGateway.get().townId);
+        nativeField(null, VersionClient.class, "navigationWorld", TownGateway.get().worldId);
+        nativeField(null, VersionClient.class, "navigationContext", TownGateway.get().context());
     }
 
     /** 无窗口初始化注册表；只替代配置落盘和注入字段，确认及玩家地图解析全部执行原生代码。 */

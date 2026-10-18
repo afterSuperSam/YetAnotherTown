@@ -165,9 +165,16 @@ public final class VerifyLinks {
             failures.add("Xaero native player map confirmation no longer checks the live dimension before confirming the selected map");
         if (!calls(bridge, "renderMapTooltip", prefix + "/ProjectHighlighter", "renderTooltip")
                 || !calls(highlighter, "renderTooltip", prefix + "/VersionClient", "drawAvatar")
-                || !calls(highlighter, "renderTooltip", prefix + "/ProjectHighlighter", "limitedLines")
+                || !calls(highlighter, "renderTooltip", prefix + "/ProjectHighlighter", "tooltipLayout")
+                || !calls(highlighter, "renderTooltip", prefix + "/VersionClient", "drawLogo")
                 || !calls(highlighter, "renderTooltip", "net/minecraft/client/gui/screens/inventory/tooltip/TooltipRenderUtil", "extractTooltipBackground"))
             failures.add("Native project hover must render wrapped text and owner avatar in its tooltip card");
+        ClassModel client = load(prefix + "/VersionClient");
+        if (!calls(client, "updateNavigation", prefix + "/VersionClient", "clearNavigation")
+                || !calls(client, "stopNavigation", prefix + "/VersionClient", "clearNavigation")
+                || !calls(client, "clearNavigation", prefix + "/XaeroBridge", "clearNavigation")
+                || !calls(bridge, "clearNavigation", "xaero/hud/minimap/waypoint/set/WaypointSet", "remove"))
+            failures.add("Arrival and explicit cancellation must remove our native waypoint and navigation HUD together");
         verifyMixin("HighlighterRegistryMixin", "xaero/map/highlight/HighlighterRegistry", "end()V", "HEAD", "registerHighlighter", failures);
         verifyMixin("MapMenuMixin", "xaero/map/gui/GuiMap", "getRightClickOptions()Ljava/util/ArrayList;", "RETURN", "addMapOptions", failures);
         verifyMixin("MapMenuMixin", "xaero/map/gui/GuiMap", "extractRenderState(Lnet/minecraft/client/gui/GuiGraphicsExtractor;IIF)V", "TAIL", "renderMapTooltip", failures);

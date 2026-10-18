@@ -35,6 +35,7 @@ public final class TownGateway {
     private final AtomicLong selection = new AtomicLong();
     private final AtomicLong authentication = new AtomicLong();
     private final AtomicLong snapshots = new AtomicLong();
+    private final AtomicLong townLists = new AtomicLong();
     private volatile String token = "";
     private volatile JsonObject player = new JsonObject();
     private volatile ClientConfig configuration = new ClientConfig();
@@ -95,6 +96,10 @@ public final class TownGateway {
                         };
                     }
                     if (!valid) throw new IllegalArgumentException("客户端配置类型错误：" + key);
+                    if (value.getAsJsonPrimitive().isNumber()) {
+                        try { value.getAsBigDecimal().intValueExact(); }
+                        catch (ArithmeticException exception) { throw new IllegalArgumentException("客户端配置数值超出范围：" + key); }
+                    }
                 }
                 ClientConfig loaded = JSON.fromJson(parsed, ClientConfig.class);
                 loaded.validate();
@@ -176,7 +181,7 @@ public final class TownGateway {
         for (JsonElement element : snapshot.getAsJsonArray("worlds")) {
             JsonObject world = element.getAsJsonObject();
             String address = world.has("serverAddress") ? world.get("serverAddress").getAsString() : "";
-            if (world.get("archived").getAsBoolean() || !address.isBlank() && !address.equalsIgnoreCase(serverAddress)) continue;
+            if (world.get("archived").getAsBoolean() || address.isBlank() || !address.equalsIgnoreCase(serverAddress)) continue;
             if (!candidate.isEmpty()) return false;
             candidate = world.get("id").getAsString();
         }
@@ -230,9 +235,11 @@ public final class TownGateway {
 
     public synchronized CompletableFuture<JsonObject> login(String playerId, String name) {
         long attempt = authentication.incrementAndGet();
+        String endpoint = configuration.endpoint;
         status = "正在使用当前游戏身份连接…";
         return request("auth.login", object("playerId", playerId, "name", name)).thenCompose(result -> {
             synchronized (this) {
+                if (authentication.get() != attempt) revoke(endpoint, result.get("token").getAsString(), false);
                 requireAttempt(attempt);
                 token = result.get("token").getAsString();
                 player = result.getAsJsonObject("player");
@@ -262,6 +269,10 @@ public final class TownGateway {
     }
 
     private void revoke(String endpoint, String previousToken) {
+        revoke(endpoint, previousToken, true);
+    }
+
+    private void revoke(String endpoint, String previousToken, boolean reportFailure) {
         if (previousToken.isEmpty()) return;
         long revision = authentication.get();
         HttpRequest request = HttpRequest.newBuilder(URI.create(endpoint + "/api"))
@@ -271,7 +282,7 @@ public final class TownGateway {
         http.sendAsync(request, HttpResponse.BodyHandlers.discarding()).whenComplete((response, error) -> {
             if (error != null || response.statusCode() != 200 && response.statusCode() != 401) {
                 LOGGER.log(System.Logger.Level.WARNING, "Remote session revocation failed; local session was cleared");
-                if (authentication.get() == revision) status = "本地已退出；服务端注销未完成，会话将在有效期结束后失效";
+                if (reportFailure && authentication.get() == revision) status = "本地已退出；服务端注销未完成，会话将在有效期结束后失效";
             }
         });
     }
@@ -289,18 +300,26 @@ public final class TownGateway {
             JsonObject envelope;
             try { envelope = JSON.fromJson(response.body(), JsonObject.class); }
             catch (RuntimeException exception) { throw new CompletionException(new ServiceException("服务返回格式错误")); }
-            if (envelope == null || !envelope.has("ok")) throw new CompletionException(new ServiceException("服务协议不匹配"));
+            if (envelope == null || !envelope.has("ok") || !envelope.get("ok").isJsonPrimitive()
+                    || !envelope.getAsJsonPrimitive("ok").isBoolean()) throw new CompletionException(new ServiceException("服务协议不匹配"));
             if (!envelope.get("ok").getAsBoolean()) {
+                if (!envelope.has("error") || !envelope.get("error").isJsonObject())
+                    throw new CompletionException(new ServiceException("服务协议不匹配"));
                 JsonObject error = envelope.getAsJsonObject("error");
-                String message = error != null && error.has("message") ? error.get("message").getAsString() : "服务请求失败";
+                if (!error.has("message") || !error.get("message").isJsonPrimitive() || !error.getAsJsonPrimitive("message").isString())
+                    throw new CompletionException(new ServiceException("服务协议不匹配"));
+                String message = error.get("message").getAsString();
                 synchronized (this) {
                     if (response.statusCode() == 401 && !action.startsWith("auth.") && authentication.get() == revision && token.equals(bearer)) clearSession(message);
                 }
                 throw new CompletionException(new ServiceException(message));
             }
+            if (response.statusCode() < 200 || response.statusCode() >= 300)
+                throw new CompletionException(new ServiceException("服务请求失败（HTTP " + response.statusCode() + "）"));
             JsonElement data = envelope.get("data");
             if (data != null && data.isJsonObject()) return data.getAsJsonObject();
-            return object("items", data == null ? new JsonArray() : data);
+            if (data != null && data.isJsonArray()) return object("items", data);
+            throw new CompletionException(new ServiceException("服务协议不匹配"));
         }).exceptionallyCompose(exception -> failed(exception, "连接服务失败，请检查地址和服务状态", revision, selectedRevision));
     }
 
@@ -336,11 +355,12 @@ public final class TownGateway {
         return CompletableFuture.failedFuture(cause);
     }
 
-    public CompletableFuture<JsonObject> refreshTowns() {
+    public synchronized CompletableFuture<JsonObject> refreshTowns() {
         long revision = authentication.get();
+        long requestRevision = townLists.incrementAndGet();
         return request("town.list", object()).thenApply(result -> {
             synchronized (this) {
-                if (authentication.get() == revision && result.has("items")) towns = result.getAsJsonArray("items");
+                if (authentication.get() == revision && townLists.get() == requestRevision && result.has("items")) towns = result.getAsJsonArray("items");
             }
             return result;
         });

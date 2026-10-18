@@ -41,8 +41,11 @@ final class ProjectHighlighter extends ChunkHighlighter {
     }
     private record Overlay(MapWorld world, HighlighterRegistry registry, JsonObject snapshot, TownGateway.Context context, String worldId, boolean enabled,
                            Map<String, String> bindings, Map<String, String> viewedMaps, List<Area> areas) { }
-    static final int AVATAR_SIZE = 24;
-    static final int OWNER_TEXT_OFFSET = 28;
+    static final int AVATAR_SIZE = 32;
+    static final int OWNER_TEXT_OFFSET = 38;
+    private static final int TYPE_ICON_OFFSET = 18;
+    record TooltipLayout(int width, int height, int titleHeight, int ownerTop, int introductionTop, int statusTop,
+                         List<String> title, List<String> owner, List<String> introduction) { }
     private static volatile Overlay overlay;
     private final HighlighterRegistry registry;
 
@@ -86,7 +89,7 @@ final class ProjectHighlighter extends ChunkHighlighter {
                 break;
             }
             String status = stringValue(project, "status");
-            String type = switch (stringValue(project, "type")) { case "building" -> "建筑"; case "machine" -> "机器"; default -> "其他"; };
+            String type = stringValue(project, "type");
             String introduction = stringValue(project, "purpose");
             if (!stringValue(project, "notes").isBlank()) introduction += (introduction.isBlank() ? "" : " / ") + stringValue(project, "notes");
             int color = switch (status) { case "planned" -> 0xDAB75C; case "active" -> 0xE49754; case "maintenance" -> 0xDF9481; case "completed" -> 0x73BC78; default -> 0x999999; };
@@ -168,7 +171,8 @@ final class ProjectHighlighter extends ChunkHighlighter {
         for (Area area : value.areas) if (area.dimension.equals(id) && area.contains(x >> 4, z >> 4)) {
             tooltips.add(Component.literal(summary(area.name, 40)));
             tooltips.add(Component.literal("负责人：" + summary(area.leaderName, 40)));
-            tooltips.add(Component.literal("类型：" + area.type));
+            String type = switch (area.type) { case "building" -> "建筑"; case "machine" -> "机器"; default -> "其他"; };
+            tooltips.add(Component.literal("类型：" + type));
             for (String line : textLines("简介：" + summary(area.introduction, 100), Math.max(40, width), Minecraft.getInstance().font)) tooltips.add(Component.literal(line));
             if (!area.status.equals("completed")) tooltips.add(Component.literal("状态：" + state(area.status)));
         }
@@ -188,29 +192,53 @@ final class ProjectHighlighter extends ChunkHighlighter {
             Area area = areaAt(value, dimension.identifier().toString(), chunkX, chunkZ);
             if (area == null) return;
             Font font = Minecraft.getInstance().font;
-            int width = Math.min(280, screen.width - 32), step = font.lineHeight + 2;
-            List<String> title = limitedLines(area.name, width, 2, font);
-            List<String> owner = limitedLines("负责人：" + summary(area.leaderName, 80), width - OWNER_TEXT_OFFSET, 2, font);
-            int ownerHeight = Math.max(AVATAR_SIZE, owner.size() * step);
-            int fixedHeight = title.size() * step + 4 + ownerHeight + step * (area.status.equals("completed") ? 2 : 3) + 6;
-            int maximumIntroductionLines = Math.max(1, Math.min(6, (screen.height - 32 - fixedHeight) / step));
-            List<String> introduction = limitedLines("简介：" + area.introduction, width, maximumIntroductionLines, font);
-            int height = fixedHeight + introduction.size() * step;
-            if (height > screen.height - 32) return;
-            int[] position = tooltipPosition(screen.width, screen.height, width, height, mouseX, mouseY);
+            int step = font.lineHeight + 2;
+            TooltipLayout layout = tooltipLayout(area.name, area.leaderName, area.introduction, area.status,
+                    screen.width, screen.height, font.lineHeight, font::width);
+            if (layout.height() > screen.height - 32) return;
+            int[] position = tooltipPosition(screen.width, screen.height, layout.width(), layout.height(), mouseX, mouseY);
             int x = position[0], y = position[1];
+            int textX = x + OWNER_TEXT_OFFSET;
             graphics.nextStratum();
-            TooltipRenderUtil.extractTooltipBackground(graphics, x, y, width, height, null);
-            for (String line : title) { graphics.text(font, line, x, y, TownStyle.ACCENT, true); y += step; }
-            y += 4;
-            VersionClient.drawAvatar(graphics, area.leaderId, area.leaderName, x, y, AVATAR_SIZE);
-            for (int index = 0; index < owner.size(); index++) graphics.text(font, owner.get(index), x + OWNER_TEXT_OFFSET, y + index * step + 2, TownStyle.TEXT, false);
-            y += ownerHeight;
-            graphics.text(font, "类型：" + area.type, x, y, TownStyle.MUTED, false); y += step;
-            for (String line : introduction) { graphics.text(font, line, x, y, TownStyle.TEXT, false); y += step; }
-            if (!area.status.equals("completed")) { graphics.text(font, "状态：" + state(area.status), x, y, TownStyle.ACCENT, false); y += step; }
-            graphics.text(font, "右键查看项目详情", x, y + 6, TownStyle.MUTED, false);
+            TooltipRenderUtil.extractTooltipBackground(graphics, x, y, layout.width(), layout.height(), null);
+            VersionClient.drawAvatar(graphics, area.leaderId, area.leaderName, x, y + 1, AVATAR_SIZE);
+            VersionClient.drawLogo(graphics, projectIcon(area.type), textX - 4, y - 4, 24);
+            for (int index = 0; index < layout.title().size(); index++) graphics.text(font, layout.title().get(index), textX + TYPE_ICON_OFFSET, y + 3 + index * step, TownStyle.ACCENT, true);
+            for (int index = 0; index < layout.owner().size(); index++) graphics.text(font, layout.owner().get(index), textX, y + layout.ownerTop() + index * step, TownStyle.MUTED, false);
+            for (int index = 0; index < layout.introduction().size(); index++) graphics.text(font, layout.introduction().get(index), textX, y + layout.introductionTop() + index * step, TownStyle.TEXT, false);
+            if (!area.status.equals("completed")) graphics.text(font, state(area.status), textX, y + layout.statusTop(), TownStyle.ACCENT, false);
         } catch (IllegalAccessException exception) { throw new IllegalStateException("读取 Xaero 地图悬停位置失败", exception); }
+    }
+
+    static String projectIcon(String type) {
+        return switch (type) { case "machine" -> "minecraft:redstone"; case "building" -> "minecraft:quartz_block"; default -> "minecraft:crafting_table"; };
+    }
+
+    /** 头像固定靠左，右栏按实际内容收缩，并为窄屏和长简介预留折行空间。 */
+    static TooltipLayout tooltipLayout(String name, String ownerName, String description, String status,
+                                       int screenWidth, int screenHeight, int lineHeight, ToIntFunction<String> measure) {
+        String ownerText = summary(ownerName, 80);
+        int naturalWidth = Math.max(longestLine(name, measure) + TYPE_ICON_OFFSET, Math.max(longestLine(ownerText, measure), longestLine(description, measure)));
+        if (!status.equals("completed")) naturalWidth = Math.max(naturalWidth, measure.applyAsInt(state(status)));
+        int textWidth = Math.max(1, Math.min(Math.min(210, screenWidth - 32 - OWNER_TEXT_OFFSET), Math.max(48, naturalWidth)));
+        int step = lineHeight + 2;
+        List<String> title = limitedLines(name, Math.max(1, textWidth - TYPE_ICON_OFFSET), 2, measure);
+        List<String> owner = limitedLines(ownerText, textWidth, 2, measure);
+        int titleHeight = Math.max(16, title.size() * step + 3);
+        int ownerTop = titleHeight + 2;
+        int introductionTop = ownerTop + owner.size() * step + 4;
+        int statusHeight = status.equals("completed") ? 0 : step + 3;
+        int maximumLines = Math.max(1, Math.min(5, (screenHeight - 32 - introductionTop - statusHeight) / step));
+        List<String> introduction = limitedLines(description, textWidth, maximumLines, measure);
+        int statusTop = introductionTop + introduction.size() * step + 3;
+        int height = Math.max(AVATAR_SIZE + 1, introductionTop + introduction.size() * step + statusHeight);
+        return new TooltipLayout(OWNER_TEXT_OFFSET + textWidth, height, titleHeight, ownerTop, introductionTop, statusTop, title, owner, introduction);
+    }
+
+    private static int longestLine(String text, ToIntFunction<String> measure) {
+        int width = 0;
+        for (String line : text.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1)) width = Math.max(width, measure.applyAsInt(line));
+        return width;
     }
 
     static List<String> textLines(String text, int width, Font font) { return textLines(text, width, font::width); }
@@ -230,11 +258,13 @@ final class ProjectHighlighter extends ChunkHighlighter {
         return result;
     }
 
-    private static List<String> limitedLines(String text, int width, int maximum, Font font) {
-        List<String> lines = textLines(text, width, font);
+    private static List<String> limitedLines(String text, int width, int maximum, ToIntFunction<String> measure) {
+        List<String> lines = textLines(text, width, measure);
         if (lines.size() <= maximum) return lines;
         List<String> result = new ArrayList<>(lines.subList(0, maximum));
-        result.set(maximum - 1, font.plainSubstrByWidth(result.get(maximum - 1), Math.max(0, width - font.width("…"))) + "…");
+        String last = result.get(maximum - 1);
+        while (!last.isEmpty() && measure.applyAsInt(last + "…") > width) last = last.substring(0, last.offsetByCodePoints(last.length(), -1));
+        result.set(maximum - 1, last + "…");
         return result;
     }
 

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { request as httpRequest } from 'node:http';
+import { connect } from 'node:net';
 import { ApiError, JsonStore, TownService, validateConfig } from '../src/service.mjs';
 import { createHttpServer } from '../src/server.mjs';
 
@@ -65,11 +67,39 @@ test('指定周目快照只报告同周目工程的区块重叠', async t => {
   assert.deepEqual(snapshot.projects.map(project => [project.id, project.overlapIds]), [[first.id, [second.id]], [second.id, [first.id]]]);
 });
 
+test('区域扫描与固定种子朴素算法等价，保留历史重叠、闭区间边界和原序', async t => {
+  const f = await fixture(t);
+  const template = await f.project();
+  const next = await f.call('world.create', { townId: f.townId, name: '其他周目' });
+  let randomState = 0x19a30f;
+  const random = maximum => { randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0; return randomState % maximum; };
+  const projects = Array.from({ length: 500 }, (_, index) => {
+    const minX = random(100) - 50; const minZ = random(100) - 50;
+    return { ...template, id: String(index), worldId: random(2) ? next.id : f.worldId, dimension: ['minecraft:overworld', 'minecraft:the_nether', 'minecraft:the_end'][random(3)], chunks: { minX, maxX: minX + random(8), minZ, maxZ: minZ + random(8) } };
+  });
+  for (const chunks of [
+    { minX: -3, maxX: -2, minZ: -1, maxZ: 0 },
+    { minX: -2, maxX: -1, minZ: 0, maxZ: 1 },
+    { minX: -1, maxX: -1, minZ: -2, maxZ: -1 },
+  ]) projects.push({ ...template, id: String(projects.length), chunks });
+  const vertical = Array.from({ length: 50 }, (_, index) => ({ ...template, id: `column-${index}`, chunks: { minX: -1, maxX: 0, minZ: index - 25, maxZ: index - 24 } })).reverse();
+  const horizontal = vertical.map(project => ({ ...project, chunks: { minX: project.chunks.minZ, maxX: project.chunks.maxZ, minZ: project.chunks.minX, maxZ: project.chunks.maxX } }));
+  for (const layout of [projects, vertical, horizontal]) {
+    f.service.state.towns[f.townId].projects = layout;
+    for (const worldId of [undefined, f.worldId, next.id]) {
+      const selected = layout.filter(project => !worldId || project.worldId === worldId);
+      const expected = selected.map(project => [project.id, selected.filter(other => other.id !== project.id && other.worldId === project.worldId && other.dimension === project.dimension && project.chunks.minX <= other.chunks.maxX && project.chunks.maxX >= other.chunks.minX && project.chunks.minZ <= other.chunks.maxZ && project.chunks.maxZ >= other.chunks.minZ).map(other => other.id)]);
+      const actual = await f.call('town.snapshot', { townId: f.townId, worldId });
+      assert.deepEqual(actual.projects.map(project => [project.id, project.overlapIds]), expected);
+    }
+  }
+});
+
 test('配置拒绝未知项、旧配置和非法范围', () => {
   assert.equal(validateConfig().port, 37841);
   assert.equal(validateConfig().dataFile, './data/yetanothertown.json');
   for (const key of ['challengeSeconds', 'defaultProximityRadius', 'maximumProximityRadius']) assert.throws(() => validateConfig({ [key]: 10 }), ApiError);
-  for (const config of [{ port: 0 }, { port: '37841' }, { bypassAuthentication: true }, { sessionHours: -1 }, JSON.parse('{"toString":1}'), JSON.parse('{"__proto__":{}}')]) assert.throws(() => validateConfig(config), ApiError);
+  for (const config of [{ port: 0 }, { port: '37841' }, { bypassAuthentication: true }, { sessionHours: -1 }, { maximumPendingRequests: 0 }, { maximumSessions: 1.5 }, { maximumSessionsPerPlayer: 0 }, { maximumTowns: 0 }, { maximumTownRecords: 5 }, { maximumRateLimitEntries: 0 }, { maximumTownBytes: 65535 }, { maximumTownBytes: 7340033 }, JSON.parse('{"toString":1}'), JSON.parse('{"__proto__":{}}')]) assert.throws(() => validateConfig(config), ApiError);
 });
 
 test('直接使用游戏 UUID 登录且无外部请求，会话到期要求重新登录', async t => {
@@ -297,6 +327,8 @@ test('移除成员不改写历史周目的工程，历史登记者游戏名保�
   const after = await f.snapshot();
   assert.equal(JSON.stringify(after.projects), before);
   assert.equal(after.projects.find(item => item.id === project.id).createdByName, 'Alice');
+  const reloaded = await new TownService({ store: f.store }).initialize();
+  assert.equal(JSON.stringify((await reloaded.handle('town.snapshot', { townId: f.townId }, f.alice.token)).projects), before);
 });
 
 test('原子持久化可重启读取，失败事务不改变内存或磁盘，损坏文件拒绝启动', async t => {
@@ -323,7 +355,7 @@ test('HTTP 封装、请求格式、认证、请求大小及真实接口交互', 
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const endpoint = `http://127.0.0.1:${server.address().port}`;
   const request = (body, headers = {}) => fetch(`${endpoint}/api`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body });
-  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.10');
+  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.11');
   assert.equal((await request('{broken')).status, 400);
   assert.equal((await request('[]')).status, 400);
   assert.equal((await request(JSON.stringify({ action: 'town.list' }))).status, 401);
@@ -441,4 +473,217 @@ test('权限组默认图标和自定义图标有效，内置身份与权限保�
   const snapshot = await f.snapshot();
   assert.deepEqual(snapshot.roles.find(role => role.id === 'newcomer').permissions, []);
   assert.equal(snapshot.members.filter(member => member.roleId === 'mayor').length, 1);
+});
+
+test('维修工单阻止工程跨维度移动，原有工单与磁盘保持一致', async t => {
+  const f = await fixture(t);
+  const project = await f.project({ status: 'completed' });
+  await f.call('ticket.create', { townId: f.townId, projectId: project.id, ...position, title: '维修' });
+  const original = await readFile(f.store.file, 'utf8');
+  await rejects(f.call('project.update', { townId: f.townId, id: project.id, dimension: 'minecraft:the_nether' }), 'conflict');
+  assert.equal(await readFile(f.store.file, 'utf8'), original);
+  const reloaded = await new TownService({ store: f.store }).initialize();
+  const snapshot = await reloaded.handle('town.snapshot', { townId: f.townId }, f.alice.token);
+  assert.equal(snapshot.projects[0].dimension, snapshot.tickets[0].dimension);
+});
+
+test('密码派生等待期间事件循环仍可处理其他请求', async t => {
+  const f = await fixture(t);
+  f.store.save = async () => {};
+  let responsive = false;
+  const eventLoop = new Promise(resolve => setImmediate(() => { responsive = true; resolve(); }));
+  await f.call('town.update', { townId: f.townId, password: 'strong_password' });
+  assert.equal(responsive, true);
+  await eventLoop;
+});
+
+test('会话数量有界，超限淘汰当前玩家最旧设备，已有设备同步游戏名', async t => {
+  const f = await fixture(t, { maximumSessionsPerPlayer: 2, maximumSessions: 3 });
+  const second = await f.login('Alice');
+  const newest = await f.call('auth.login', { playerId: PLAYERS.Alice, name: 'Alice_New' });
+  await rejects(f.call('town.list'), 'unauthenticated');
+  assert.equal((await f.call('town.list', {}, second.token)).length, 1);
+  assert.equal((await f.call('town.list', {}, newest.token)).length, 1);
+  assert.equal(Object.values(f.service.state.sessions).every(session => session.player.name === 'Alice_New'), true);
+  await f.login('Bob');
+  await rejects(f.login('Carol'), 'rate_limited');
+  assert.equal(Object.keys(f.service.state.sessions).length, 3);
+  f.advance(168 * 3600000);
+  await f.login('Carol');
+  assert.equal(Object.keys(f.service.state.sessions).length, 1);
+});
+
+test('登录限流键有容量边界，到期后可重新登录', async t => {
+  const f = await fixture(t, { maximumRateLimitEntries: 2 });
+  await f.login('Bob');
+  await rejects(f.login('Carol'), 'rate_limited');
+  assert.equal(f.service.attempts.size, 2);
+  f.advance(60000);
+  await f.login('Carol');
+  assert.equal(f.service.attempts.size, 1);
+});
+
+test('事务队列超限立即拒绝，保存完成或失败后释放容量', async t => {
+  const f = await fixture(t, { maximumPendingRequests: 1 });
+  const save = f.store.save.bind(f.store);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  f.store.save = async state => { await gate; await save(state); };
+  const first = f.call('town.update', { townId: f.townId, name: '队列验证' });
+  await rejects(f.snapshot(), 'rate_limited');
+  release(); await first;
+  assert.equal((await f.snapshot()).town.name, '队列验证');
+  f.store.save = async () => { throw new Error('disk full'); };
+  await assert.rejects(f.call('town.update', { townId: f.townId, name: '失败' }), /disk full/);
+  assert.equal(f.service.pendingRequests, 0);
+  assert.equal((await f.snapshot()).town.name, '队列验证');
+});
+
+test('小镇和记录容量只限制新增，已存在资料仍可读取编辑', async t => {
+  const f = await fixture(t, { maximumTowns: 1, maximumTownRecords: 7 });
+  await rejects(f.call('town.create', { name: '超限' }), 'conflict');
+  const project = await f.project();
+  await rejects(f.project({ dimension: 'minecraft:the_nether' }), 'conflict');
+  await rejects(f.call('world.create', { townId: f.townId, name: '超限周目' }), 'conflict');
+  await rejects(f.call('role.save', { townId: f.townId, name: '超限权限组', permissions: [] }), 'conflict');
+  await f.call('project.update', { townId: f.townId, id: project.id, purpose: '仍可维护' });
+  const smaller = await new TownService({ store: f.store, config: { maximumTownRecords: 6 } }).initialize();
+  assert.equal((await smaller.handle('town.snapshot', { townId: f.townId }, f.alice.token)).projects.length, 1);
+});
+
+test('小镇容量按中文 UTF-8 字节校验，超限写入不改变内存与磁盘', async t => {
+  const f = await fixture(t, { maximumTownBytes: 65536 });
+  for (let index = 0; index < 7; index++) await f.project({ purpose: '中'.repeat(2000), chunks: { minX: index, maxX: index, minZ: 0, maxZ: 0 } });
+  const original = await readFile(f.store.file, 'utf8');
+  const snapshot = await f.snapshot();
+  const payload = { purpose: '中'.repeat(2000), chunks: { minX: 8, maxX: 8, minZ: 0, maxZ: 0 } };
+  await rejects(f.project(payload), 'conflict');
+  assert.equal(await readFile(f.store.file, 'utf8'), original);
+  assert.deepEqual(await f.snapshot(), snapshot);
+  await f.project({ ...payload, purpose: 'x'.repeat(2000) });
+  const latest = await f.snapshot();
+  assert.equal(latest.projects.length, 8);
+  assert.ok(Buffer.byteLength(JSON.stringify({ ok: true, data: latest })) < f.service.config.maximumTownBytes);
+});
+
+test('已有超限资料可原样打开并缩减，容量仍超限时拒绝新增与增长', async t => {
+  const f = await fixture(t);
+  for (let index = 0; index < 12; index++) await f.project({ purpose: '中'.repeat(2000), chunks: { minX: index, maxX: index, minZ: 0, maxZ: 0 } });
+  const service = await new TownService({ store: f.store, config: { maximumTownBytes: 65536 } }).initialize();
+  const snapshot = await service.handle('town.snapshot', { townId: f.townId }, f.alice.token);
+  const original = await readFile(f.store.file, 'utf8');
+  await rejects(service.handle('town.update', { townId: f.townId, introduction: '增长' }, f.alice.token), 'conflict');
+  await rejects(service.handle('world.create', { townId: f.townId, name: '增长' }, f.alice.token), 'conflict');
+  assert.equal(await readFile(f.store.file, 'utf8'), original);
+  await service.handle('project.update', { townId: f.townId, id: snapshot.projects[0].id, purpose: '' }, f.alice.token);
+  assert.equal((await service.handle('town.snapshot', { townId: f.townId }, f.alice.token)).projects[0].purpose, '');
+  assert.ok(Buffer.byteLength(await readFile(f.store.file, 'utf8')) < Buffer.byteLength(original));
+});
+
+test('容量预算计入历史工程重叠列表，原始文件较小仍不能继续增长', async t => {
+  const f = await fixture(t, { maximumTownBytes: 65536 });
+  const template = await f.project();
+  f.service.state.towns[f.townId].projects = Array.from({ length: 100 }, (_, index) => ({ ...template, id: String(index).padStart(24, '0') }));
+  await f.store.save(f.service.state);
+  assert.ok(Buffer.byteLength(JSON.stringify(f.service.state.towns[f.townId])) < 65536);
+  const original = await readFile(f.store.file, 'utf8');
+  await rejects(f.call('role.save', { townId: f.townId, name: '额外权限组', permissions: [] }), 'conflict');
+  assert.equal(await readFile(f.store.file, 'utf8'), original);
+});
+
+test('无效认证与未知操作不复制全服务状态', async t => {
+  const f = await fixture(t);
+  let reads = 0;
+  Object.defineProperty(f.service.state, 'unrelated', { enumerable: true, get() { reads++; return {}; } });
+  await rejects(f.service.handle('town.update', { townId: f.townId, name: '越权' }), 'unauthenticated');
+  await rejects(f.call('missing.action', { townId: f.townId }), 'not_found');
+  await rejects(f.call('auth.login', { playerId: 'invalid', name: 'Alice' }), 'invalid_argument');
+  assert.equal(reads, 0);
+});
+
+test('持久化损坏的子记录、权限和关联拒绝加载且原文不变', async t => {
+  const f = await fixture(t);
+  const project = await f.project({ status: 'completed' });
+  await f.call('ticket.create', { townId: f.townId, projectId: project.id, ...position, title: '维修' });
+  const original = JSON.parse(await readFile(f.store.file, 'utf8'));
+  const corruptions = [
+    town => { town.members.push(null); },
+    town => { town.roles[0].permissions = ['town.manage']; },
+    town => { town.roles[1].permissions = ['toString']; },
+    town => { town.members[0].roleId = 'missing'; },
+    town => { town.password = { salt: 'invalid', hash: 'invalid' }; },
+    town => { town.projects[0].chunks.minX = 3; },
+    town => { town.projects[0].worldId = 'missing'; },
+    town => { town.tickets[0].dimension = 'minecraft:the_nether'; },
+    town => { town.projects[0].status = 'completed'; },
+    town => { town.tickets[0].projectId = 'missing'; },
+  ];
+  for (const corrupt of corruptions) {
+    const state = structuredClone(original); corrupt(state.towns[f.townId]);
+    const serialized = JSON.stringify(state); await writeFile(f.store.file, serialized);
+    await rejects(new TownService({ store: f.store }).initialize(), 'invalid_argument');
+    assert.equal(await readFile(f.store.file, 'utf8'), serialized);
+  }
+  const state = structuredClone(original); Object.values(state.sessions)[0].player.name = { toString: null };
+  await writeFile(f.store.file, JSON.stringify(state));
+  await rejects(new TownService({ store: f.store }).initialize(), 'invalid_argument');
+});
+
+test('当前格式的密码、自定义权限、多设备、周目和历史维修均可原样重启', async t => {
+  const f = await fixture(t); const bob = await f.join();
+  await f.login('Alice');
+  await f.call('town.update', { townId: f.townId, password: 'strong_password' });
+  const role = await f.call('role.save', { townId: f.townId, name: '维护员', icon: 'example:role/stone', permissions: ['project.edit', 'ticket.create'] });
+  await f.call('member.role', { townId: f.townId, playerId: bob.player.id, roleId: role.id });
+  const project = await f.project({ status: 'completed' });
+  const ticket = await f.call('ticket.create', { townId: f.townId, projectId: project.id, ...position, title: '历史维修' }, bob.token);
+  await f.call('ticket.update', { townId: f.townId, id: ticket.id, status: 'resolved', resolution: '恢复' });
+  await f.call('world.archive', { townId: f.townId, worldId: f.worldId });
+  await f.call('member.remove', { townId: f.townId, playerId: bob.player.id });
+  const world = await f.call('world.create', { townId: f.townId, name: '新周目' });
+  await f.project({ worldId: world.id });
+  await f.project({ worldId: world.id, dimension: 'minecraft:the_nether', status: 'active' });
+  const current = await f.project({ worldId: world.id, dimension: 'minecraft:the_end', status: 'completed' });
+  await f.call('ticket.create', { townId: f.townId, projectId: current.id, ...position, dimension: current.dimension, title: '当前维修' });
+  const before = await readFile(f.store.file, 'utf8');
+  const reloaded = await new TownService({ store: f.store }).initialize();
+  assert.deepEqual(reloaded.state, f.service.state);
+  assert.equal(await readFile(f.store.file, 'utf8'), before);
+});
+
+test('HTTP 读取中途断连不会产生未处理流错误，服务继续响应', async t => {
+  const f = await fixture(t);
+  const server = createHttpServer(f.service, f.service.config, { error() {} });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  let close;
+  const closed = new Promise(resolve => { close = resolve; });
+  const received = new Promise(resolve => server.once('request', request => { request.once('close', close); resolve(); }));
+  const socket = connect(server.address().port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); });
+  socket.write('POST /api HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{');
+  await received; socket.destroy(); await closed;
+  assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/health`)).status, 200);
+});
+
+test('HTTP 立即拒绝未结束超限流和超时请求，显式空 payload 不当作有效对象', async t => {
+  const f = await fixture(t, { maxBodyBytes: 1024, requestTimeoutSeconds: 1 });
+  const server = createHttpServer(f.service, f.service.config, { error() {} });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const endpoint = `http://127.0.0.1:${server.address().port}/api`;
+  const partial = (headers, body) => new Promise((resolve, reject) => {
+    const request = httpRequest(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers } }, response => {
+      response.resume(); response.once('end', () => { clearTimeout(deadline); request.destroy(); resolve(response.statusCode); });
+    });
+    const deadline = setTimeout(() => { request.destroy(); reject(new Error('Response did not arrive before request ended')); }, 2500);
+    request.on('error', error => { clearTimeout(deadline); reject(error); });
+    request.flushHeaders(); if (body) request.write(body);
+  });
+  assert.equal(await partial({ 'Content-Length': '2048' }), 413);
+  assert.equal(await partial({ 'Transfer-Encoding': 'chunked' }, 'x'.repeat(2048)), 413);
+  assert.equal(await partial({ 'Transfer-Encoding': 'chunked' }, '{'), 408);
+  const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${f.alice.token}` }, body: JSON.stringify({ action: 'town.list', payload: null }) });
+  assert.equal(response.status, 400);
 });

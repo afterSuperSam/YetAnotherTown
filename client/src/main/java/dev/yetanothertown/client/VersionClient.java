@@ -45,6 +45,7 @@ public final class VersionClient {
     private static JsonObject navigation;
     private static String navigationTown = "";
     private static String navigationWorld = "";
+    private static TownGateway.Context navigationContext;
     private static Method hiddenGetter;
     private static Field hiddenField;
     private static Object hiddenOwner;
@@ -89,7 +90,8 @@ public final class VersionClient {
                 if (openRequested) show(new TownScreen());
                 else if (projectRequested) TownHud.openProject();
             }
-            if (navigation != null && (!gateway.loggedIn() || !navigationTown.equals(gateway.townId) || !navigationWorld.equals(gateway.worldId) || !XaeroBridge.isCurrentWorld())) clearNavigation();
+            updateNavigation(client.player != null && gateway.loggedIn() && XaeroBridge.isCurrentWorld(), dimension(),
+                    client.player == null ? 0 : client.player.getBlockX(), client.player == null ? 0 : client.player.getBlockZ());
             if (gateway.loggedIn() && !gateway.townId.isEmpty() && !refreshing && now >= nextRefresh) {
                 refreshing = true;
                 nextRefresh = now + gateway.config().pollIntervalSeconds * 1_000_000_000L;
@@ -253,9 +255,31 @@ public final class VersionClient {
         navigation = target;
         navigationTown = TownGateway.get().townId;
         navigationWorld = TownGateway.get().worldId;
-        TownGateway.get().status = "已设为导航目标：" + TownScreen.stringValue(target, "name", TownScreen.stringValue(target, "title", "目标"));
+        navigationContext = TownGateway.get().context();
+        TownGateway.get().status = "已设为导航目标：" + navigationName(target);
         return true;
     }
     static JsonObject navigation() { return navigation; }
-    static void clearNavigation() { navigation = null; navigationTown = ""; navigationWorld = ""; XaeroBridge.clearNavigation(); }
+    static String navigationName(JsonObject target) { return target.has("chunks") ? XaeroBridge.projectName(target) : TownScreen.stringValue(target, "title", TownScreen.stringValue(target, "name", "导航目标")); }
+    static void updateNavigation(boolean usable, String dimension, int blockX, int blockZ) {
+        TownGateway gateway = TownGateway.get();
+        if (navigation == null) return;
+        if (!usable || !navigationTown.equals(gateway.townId) || !navigationWorld.equals(gateway.worldId)
+                || !gateway.context().equals(navigationContext) || !TownScreen.stringValue(navigation, "dimension").equals(dimension)) {
+            clearNavigation();
+            return;
+        }
+        JsonObject chunks = TownScreen.objectValue(navigation, "chunks");
+        boolean arrived = chunks.isEmpty()
+                ? TownScreen.integer(navigation, "x") == blockX && TownScreen.integer(navigation, "z") == blockZ
+                : (blockX >> 4) >= TownScreen.integer(chunks, "minX") && (blockX >> 4) <= TownScreen.integer(chunks, "maxX")
+                    && (blockZ >> 4) >= TownScreen.integer(chunks, "minZ") && (blockZ >> 4) <= TownScreen.integer(chunks, "maxZ");
+        if (arrived) {
+            String name = navigationName(navigation);
+            clearNavigation();
+            gateway.status = "已到达：" + name;
+        }
+    }
+    static void stopNavigation() { clearNavigation(); TownGateway.get().status = "已停止导航"; }
+    static void clearNavigation() { navigation = null; navigationTown = ""; navigationWorld = ""; navigationContext = null; XaeroBridge.clearNavigation(); }
 }

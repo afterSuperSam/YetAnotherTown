@@ -8,15 +8,17 @@ export const cache = path.join(root, '.cache', 'dependencies');
 export const versions = ['26.3', '26.2', '26.1.2'];
 const headers = { 'User-Agent': 'YetAnotherTown/1.0.0 (local development)' };
 export async function download(url, target, checksum, algorithm = 'sha1') {
+  const checksumLength = { sha1: 40, sha256: 64, sha512: 128 }[algorithm];
+  if (!checksumLength || typeof checksum !== 'string' || !new RegExp(`^[a-f0-9]{${checksumLength}}$`).test(checksum)) throw new Error(`Invalid dependency checksum: ${target}`);
   await mkdir(path.dirname(target), { recursive: true });
   try {
     const bytes = await readFile(target);
-    if (!checksum || createHash(algorithm).update(bytes).digest('hex') === checksum) return target;
+    if (createHash(algorithm).update(bytes).digest('hex') === checksum) return target;
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(45000) });
   if (!response.ok) throw new Error(`Dependency download ${response.status}: ${url}`);
   const bytes = Buffer.from(await response.arrayBuffer());
-  if (checksum && createHash(algorithm).update(bytes).digest('hex') !== checksum) throw new Error(`Dependency checksum mismatch: ${target}`);
+  if (createHash(algorithm).update(bytes).digest('hex') !== checksum) throw new Error(`Dependency checksum mismatch: ${target}`);
   await writeFile(target, bytes);
   return target;
 }

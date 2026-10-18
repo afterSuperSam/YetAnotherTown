@@ -7,5 +7,12 @@
   "maxBodyBytes": 65536,
   "requestsPerMinute": 120,
   "authenticationAttemptsPerMinute": 10,
-  "maximumRegionChunks": 65536
+  "maximumRegionChunks": 65536,
+  "maximumPendingRequests": 64,
+  "maximumSessions": 10000,
+  "maximumSessionsPerPlayer": 8,
+  "maximumTowns": 1000,
+  "maximumTownRecords": 10000,
+  "maximumRateLimitEntries": 10000,
+  "maximumTownBytes": 7340032
 }

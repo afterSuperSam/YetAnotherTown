@@ -21,7 +21,7 @@ public final class TownGatewayTest {
     }
     public static void main(String[] arguments) throws Exception {
         TownGateway gateway = TownGateway.INSTANCE;
-        for (String invalid : new String[]{"{\"keyBindingsVersion\":1,\"endpoint\":\"https://old.example.test\"}", "{", "null", "[]", "{\"pollIntervalSeconds\":0}"}) {
+        for (String invalid : new String[]{"{\"keyBindingsVersion\":1,\"endpoint\":\"https://old.example.test\"}", "{", "null", "[]", "{\"pollIntervalSeconds\":0}", "{\"pollIntervalSeconds\":4294967306}"}) {
             var brokenDirectory = Files.createTempDirectory("yat-invalid-config-");
             var original = brokenDirectory.resolve("yetanothertown.json");
             Files.writeString(original, invalid);
@@ -62,8 +62,12 @@ public final class TownGatewayTest {
         CountDownLatch refreshRelease = new CountDownLatch(1);
         var refreshCount = new java.util.concurrent.atomic.AtomicInteger();
         CountDownLatch revoked = new CountDownLatch(1);
+        CountDownLatch staleLoginRevoked = new CountDownLatch(1);
         CountDownLatch loginStarted = new CountDownLatch(1);
         CountDownLatch loginRelease = new CountDownLatch(1);
+        CountDownLatch townListStarted = new CountDownLatch(1);
+        CountDownLatch townListRelease = new CountDownLatch(1);
+        var delayTownList = new java.util.concurrent.atomic.AtomicBoolean();
         CountDownLatch oversizedRelease = new CountDownLatch(1);
         AtomicReference<JsonObject> claimedIdentity = new AtomicReference<>();
         var executor = Executors.newVirtualThreadPerTaskExecutor();
@@ -84,10 +88,23 @@ public final class TownGatewayTest {
                         try { loginRelease.await(5, TimeUnit.SECONDS); }
                         catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
                     }
-                    body = "{\"ok\":true,\"data\":{\"token\":\"test-token\",\"player\":{\"id\":\"" + payload.get("playerId").getAsString() + "\",\"name\":\"" + payload.get("name").getAsString() + "\"}}}";
+                    String issuedToken = payload.get("name").getAsString().equals("Delayed") ? "delayed-token" : "test-token";
+                    body = "{\"ok\":true,\"data\":{\"token\":\"" + issuedToken + "\",\"player\":{\"id\":\"" + payload.get("playerId").getAsString() + "\",\"name\":\"" + payload.get("name").getAsString() + "\"}}}";
                 }
-                case "auth.logout" -> { revoked.countDown(); body = "{\"ok\":true,\"data\":{}}"; }
-                case "town.list" -> body = "{\"ok\":true,\"data\":[{\"id\":\"00000001\",\"name\":\"测试镇\"}]}";
+                case "auth.logout" -> {
+                    revoked.countDown();
+                    if ("Bearer delayed-token".equals(exchange.getRequestHeaders().getFirst("Authorization"))) staleLoginRevoked.countDown();
+                    body = "{\"ok\":true,\"data\":{}}";
+                }
+                case "town.list" -> {
+                    boolean delayed = delayTownList.getAndSet(false);
+                    if (delayed) {
+                        townListStarted.countDown();
+                        try { townListRelease.await(5, TimeUnit.SECONDS); }
+                        catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
+                    }
+                    body = "{\"ok\":true,\"data\":[{\"id\":\"" + (delayed ? "outdated" : "00000001") + "\",\"name\":\"测试镇\"}]}";
+                }
                 case "town.snapshot" -> {
                     String town = payload.get("townId").getAsString();
                     if (town.equals("slow")) {
@@ -107,6 +124,11 @@ public final class TownGatewayTest {
                 case "denied" -> { status = 403; body = "{\"ok\":false,\"error\":{\"code\":\"FORBIDDEN\",\"message\":\"没有操作权限\"}}"; }
                 case "expired" -> { status = 401; body = "{\"ok\":false,\"error\":{\"code\":\"unauthenticated\",\"message\":\"登录已过期\"}}"; }
                 case "malformed" -> body = "not JSON";
+                case "invalid-ok" -> body = "{\"ok\":\"true\",\"data\":{}}";
+                case "invalid-error" -> { status = 403; body = "{\"ok\":false,\"error\":[]}"; }
+                case "invalid-message" -> { status = 403; body = "{\"ok\":false,\"error\":{\"message\":null}}"; }
+                case "invalid-data" -> body = "{\"ok\":true,\"data\":42}";
+                case "http-failure" -> { status = 503; body = "{\"ok\":true,\"data\":{}}"; }
                 case "oversized" -> {
                     exchange.sendResponseHeaders(200, 0);
                     try {
@@ -166,6 +188,13 @@ public final class TownGatewayTest {
             require(gateway.loggedIn() && gateway.player().get("name").getAsString().equals("Sam"), "current game identity retained");
             require(gateway.towns.size() == 1, "array envelope populates town list");
             require("Bearer test-token".equals(authorization.get()), "subsequent requests use session token");
+            delayTownList.set(true);
+            var olderTowns = gateway.refreshTowns();
+            require(townListStarted.await(5, TimeUnit.SECONDS), "older town list response is in flight");
+            gateway.refreshTowns().get(5, TimeUnit.SECONDS);
+            townListRelease.countDown();
+            olderTowns.get(5, TimeUnit.SECONDS);
+            require(gateway.towns.get(0).getAsJsonObject().get("id").getAsString().equals("00000001"), "older town list cannot overwrite the latest memberships");
             TownGateway.Context connectedContext = gateway.context();
             gateway.configure(endpoint, 4, 8, 5, false, false);
             require(gateway.isCurrent(connectedContext), "visual settings preserve operation context");
@@ -187,6 +216,9 @@ public final class TownGatewayTest {
             var currentWorld = TownGateway.object("id", gateway.worldId, "archived", false, "serverAddress", "town.example");
             worlds.add(currentWorld);
             gateway.snapshot = TownGateway.object("worlds", worlds);
+            currentWorld.addProperty("serverAddress", "");
+            require(!gateway.autoBindMap("town.example", "minecraft:overworld", "personal-server|third"), "worlds without a server address require explicit map binding");
+            currentWorld.addProperty("serverAddress", "town.example");
             require(!gateway.autoBindMap("different.example", "minecraft:overworld", "personal-server|third"), "automatic binding must match the current server");
             require(!gateway.autoBindMap("town.example", "minecraft:overworld", "personal-server|first"), "automatic binding cannot reuse historical terrain");
             require(gateway.autoBindMap("TOWN.EXAMPLE", "minecraft:overworld", "personal-server|third"), "a unique active world binds automatically without a management detour");
@@ -204,6 +236,12 @@ public final class TownGatewayTest {
             require(gateway.status.equals("没有操作权限"), "service errors remain Chinese");
             gateway.request("malformed", TownGateway.object()).handle((value, error) -> null).join();
             require(gateway.status.equals("服务返回格式错误"), "invalid protocol explicitly classified");
+            for (String action : new String[]{"invalid-ok", "invalid-error", "invalid-message", "invalid-data"}) {
+                gateway.request(action, TownGateway.object()).handle((value, error) -> null).join();
+                require(gateway.status.equals("服务协议不匹配"), "invalid envelope types are classified: " + action);
+            }
+            gateway.request("http-failure", TownGateway.object()).handle((value, error) -> null).join();
+            require(gateway.status.equals("服务请求失败（HTTP 503）"), "unsuccessful HTTP status cannot report a successful operation");
             gateway.request("oversized", TownGateway.object()).handle((value, error) -> null).get(5, TimeUnit.SECONDS);
             require(gateway.status.equals("服务返回的数据过大"), "oversized response rejected during network reading");
             oversizedRelease.countDown();
@@ -242,11 +280,13 @@ public final class TownGatewayTest {
             loginRelease.countDown();
             login.handle((value, error) -> null).get(5, TimeUnit.SECONDS);
             require(!gateway.loggedIn(), "logout cancels a pending login");
+            require(staleLoginRevoked.await(5, TimeUnit.SECONDS), "a login token issued after cancellation is revoked remotely");
             require(!Files.readString(directory.resolve("yetanothertown.json")).contains("test-token"), "session token never persisted");
         } finally {
             slowRelease.countDown();
             refreshRelease.countDown();
             loginRelease.countDown();
+            townListRelease.countDown();
             server.stop(0);
             oversizedRelease.countDown();
             executor.close();

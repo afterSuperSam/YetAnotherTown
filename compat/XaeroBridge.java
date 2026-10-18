@@ -129,6 +129,7 @@ public final class XaeroBridge {
                 rightClickDimensionField = mapField("rightClickDim");
             }
             TownGateway gateway = TownGateway.get();
+            if (VersionClient.navigation() != null) options.add(option(map, options.size(), "停止小镇导航", VersionClient::stopNavigation));
             options.add(option(map, options.size(), gateway.config().projectOverlayEnabled ? "隐藏小镇工程区域" : "显示小镇工程区域", () -> {
                 gateway.setProjectOverlayEnabled(!gateway.config().projectOverlayEnabled);
                 ProjectHighlighter.refresh();

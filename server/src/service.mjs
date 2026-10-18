@@ -1,12 +1,16 @@
-import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomInt, scrypt, timingSafeEqual } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 export const DEFAULT_CONFIG = Object.freeze({
   host: '127.0.0.1', port: 37841, dataFile: './data/yetanothertown.json', sessionHours: 168,
   requestTimeoutSeconds: 15, maxBodyBytes: 65536,
   requestsPerMinute: 120, authenticationAttemptsPerMinute: 10,
   maximumRegionChunks: 65536,
+  maximumPendingRequests: 64, maximumSessions: 10000, maximumSessionsPerPlayer: 8,
+  maximumTowns: 1000, maximumTownRecords: 10000, maximumRateLimitEntries: 10000,
+  maximumTownBytes: 7 * 1024 * 1024,
 });
 
 export const PERMISSIONS = Object.freeze({
@@ -22,6 +26,10 @@ const MEMBER_PERMISSIONS = [
 ];
 const COLLECTIONS = ['roles', 'members', 'worlds', 'projects', 'tickets'];
 const DIMENSION = /^[a-z0-9_.-]+:[a-z0-9_/.-]+$/;
+const PLAYER_ID = /^[a-f0-9]{32}$/;
+const READ_ACTIONS = new Set(['town.list', 'town.snapshot']);
+const ACTIONS = new Set(['auth.login', 'auth.logout', 'town.list', 'town.snapshot', 'town.create', 'town.join', 'town.update', 'town.transfer', 'role.save', 'role.delete', 'member.role', 'member.remove', 'world.create', 'world.update', 'world.archive', 'project.create', 'project.update', 'project.status', 'ticket.create', 'ticket.update']);
+const derivePassword = promisify(scrypt);
 
 export class ApiError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -46,6 +54,9 @@ export function validateConfig(input = {}) {
     requestTimeoutSeconds: [1, 120], maxBodyBytes: [1024, 1048576],
     requestsPerMinute: [1, 10000], authenticationAttemptsPerMinute: [1, 100],
     maximumRegionChunks: [1, 1048576],
+    maximumPendingRequests: [1, 10000], maximumSessions: [1, 100000], maximumSessionsPerPlayer: [1, 100],
+    maximumTowns: [1, 10000], maximumTownRecords: [6, 100000], maximumRateLimitEntries: [1, 100000],
+    maximumTownBytes: [65536, 7 * 1024 * 1024],
   };
   for (const [key, [minimum, maximum]] of Object.entries(limits)) {
     check(Number.isSafeInteger(result[key]) && result[key] >= minimum && result[key] <= maximum, 'invalid_argument', `配置 ${key} 必须为 ${minimum}–${maximum} 的整数`);
@@ -68,22 +79,107 @@ function choice(value, values, name) {
   check(values.includes(value), 'invalid_argument', `${name}无效`);
   return value;
 }
-function hashPassword(password) {
+async function hashPassword(password) {
   const value = text(password, '小镇密码', 128, true);
   if (!value) return null;
   check(value.length >= 6, 'invalid_argument', '小镇密码至少需要 6 个字符');
   const salt = randomBytes(16).toString('hex');
-  return { salt, hash: scryptSync(value, salt, 32).toString('hex') };
+  return { salt, hash: (await derivePassword(value, salt, 32)).toString('hex') };
 }
-function validPassword(password, saved) {
+async function validPassword(password, saved) {
   if (!saved) return true;
   const value = text(password, '小镇密码', 128, true);
-  return timingSafeEqual(scryptSync(value, saved.salt, 32), Buffer.from(saved.hash, 'hex'));
+  return timingSafeEqual(await derivePassword(value, saved.salt, 32), Buffer.from(saved.hash, 'hex'));
 }
 function publicTown(town) {
   const { password, ...details } = town;
   for (const key of COLLECTIONS) delete details[key];
   return { ...details, passwordEnabled: Boolean(password) };
+}
+
+// 按周目和维度扫描区域，返回顺序与原工程列表保持一致。
+function scanProjectOverlaps(projects, overlap) {
+  const groups = new Map();
+  for (const [index, project] of projects.entries()) {
+    const key = JSON.stringify([project.worldId, project.dimension]);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ project, index });
+  }
+  for (const group of groups.values()) {
+    const axis = new Set(group.map(item => item.project.chunks.minX)).size >= new Set(group.map(item => item.project.chunks.minZ)).size ? 'X' : 'Z';
+    const minimum = axis === 'X' ? 'minX' : 'minZ'; const maximum = axis === 'X' ? 'maxX' : 'maxZ';
+    const otherMinimum = axis === 'X' ? 'minZ' : 'minX'; const otherMaximum = axis === 'X' ? 'maxZ' : 'maxX';
+    group.sort((left, right) => left.project.chunks[minimum] - right.project.chunks[minimum] || left.index - right.index);
+    for (let left = 0; left < group.length; left++) {
+      const current = group[left];
+      const currentChunks = current.project.chunks;
+      for (let right = left + 1; right < group.length; right++) {
+        const next = group[right];
+        const nextChunks = next.project.chunks;
+        if (nextChunks[minimum] > currentChunks[maximum]) break;
+        if (current.project.id !== next.project.id && currentChunks[otherMinimum] <= nextChunks[otherMaximum] && currentChunks[otherMaximum] >= nextChunks[otherMinimum]) {
+          overlap(current.index, next.index);
+        }
+      }
+    }
+  }
+}
+function projectsWithOverlaps(projects) {
+  const overlaps = projects.map(() => []);
+  scanProjectOverlaps(projects, (left, right) => { overlaps[left].push(right); overlaps[right].push(left); });
+  return projects.map((project, index) => ({ ...project, overlapIds: overlaps[index].sort((left, right) => left - right).map(other => projects[other].id) }));
+}
+
+// 容量按 UTF-8 响应预算，含历史重叠 ID、当前成员副本和接口元数据余量。
+function townSnapshotBytes(town) {
+  const bytes = value => Buffer.byteLength(JSON.stringify(value));
+  let total = bytes(town) + town.members.reduce((maximum, member) => Math.max(maximum, bytes(member)), 0) + 16384;
+  const identifiers = town.projects.map(project => bytes(project.id));
+  const counts = town.projects.map(() => 0);
+  for (const project of town.projects) total += bytes({ ...project, overlapIds: [] }) - bytes(project);
+  scanProjectOverlaps(town.projects, (left, right) => {
+    total += identifiers[right] + (counts[left]++ > 0 ? 1 : 0);
+    total += identifiers[left] + (counts[right]++ > 0 ? 1 : 0);
+  });
+  return total;
+}
+
+// 加载时检查记录与关联，损坏数据保持原文件并拒绝启动。
+function validateState(state) {
+  check(object(state) && state.version === 3 && object(state.towns) && object(state.sessions), 'invalid_argument', '持久化数据版本或结构无效');
+  const valid = (condition, name) => check(condition, 'invalid_argument', `持久化${name}数据无效`);
+  const string = (value, maximum, optional = false) => typeof value === 'string' && (optional || value.trim().length > 0) && value.length <= maximum;
+  const date = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
+  const player = value => typeof value === 'string' && PLAYER_ID.test(value);
+  const record = (value, maximum = 128) => object(value) && string(value.id, maximum);
+  const unique = (values, key) => new Set(values.map(value => value[key])).size === values.length;
+  for (const [key, session] of Object.entries(state.sessions)) valid(/^[a-f0-9]{64}$/.test(key) && object(session) && object(session.player) && player(session.player.id) && typeof session.player.name === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(session.player.name) && Number.isSafeInteger(session.expiresAt) && session.expiresAt > 0, '会话');
+  for (const [id, town] of Object.entries(state.towns)) {
+    valid(/^\d{8}$/.test(id) && object(town) && town.id === id && COLLECTIONS.every(key => Array.isArray(town[key]) && town[key].every(object)), '小镇');
+    valid(string(town.name, 64) && string(town.introduction, 2000, true) && string(town.logo, 512, true) && string(town.server, 200, true) && date(town.createdAt), '小镇资料');
+    valid(town.password === null || object(town.password) && typeof town.password.salt === 'string' && /^[a-f0-9]{32}$/.test(town.password.salt) && typeof town.password.hash === 'string' && /^[a-f0-9]{64}$/.test(town.password.hash), '密码');
+    valid(unique(town.roles, 'id') && town.roles.every(role => record(role) && string(role.name, 32) && typeof role.icon === 'string' && role.icon.length <= 128 && DIMENSION.test(role.icon) && Array.isArray(role.permissions) && new Set(role.permissions).size === role.permissions.length && role.permissions.every(permission => typeof permission === 'string' && Object.hasOwn(PERMISSIONS, permission))), '权限组');
+    const roles = new Map(town.roles.map(role => [role.id, role]));
+    valid(['newcomer', 'member', 'manager', 'mayor'].every(role => roles.has(role)) && roles.get('newcomer').permissions.length === 0 && roles.get('mayor').permissions.length === Object.keys(PERMISSIONS).length, '内置权限组');
+    valid(unique(town.members, 'playerId') && town.members.every(member => player(member.playerId) && typeof member.name === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(member.name) && roles.has(member.roleId) && date(member.joinedAt)), '成员');
+    valid(town.members.filter(member => member.roleId === 'mayor').length === 1 && town.members.some(member => member.playerId === town.ownerId && member.roleId === 'mayor'), '镇长');
+    for (const key of ['worlds', 'projects', 'tickets']) valid(unique(town[key], 'id') && town[key].every(value => record(value) && player(value.createdBy) && typeof value.createdByName === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(value.createdByName) && date(value.createdAt) && (value.updatedAt === undefined || date(value.updatedAt))), '记录');
+    valid(town.worlds.every(world => string(world.name, 100) && string(world.serverAddress, 200, true) && string(world.worldKey, 200, true) && typeof world.archived === 'boolean' && (!world.archived || date(world.archivedAt))), '周目');
+    const worlds = new Map(town.worlds.map(world => [world.id, world]));
+    valid(town.projects.every(project => {
+      const world = worlds.get(project.worldId);
+      const chunks = project.chunks;
+      return world && string(project.name, 100) && (project.status === 'planned' || project.name !== '预留地块') && ['building', 'machine', 'other'].includes(project.type) && string(project.purpose, 2000, true) && player(project.leaderId) && (world.archived || town.members.some(member => member.playerId === project.leaderId)) && typeof project.dimension === 'string' && project.dimension.length <= 128 && DIMENSION.test(project.dimension) && object(chunks) && ['minX', 'maxX', 'minZ', 'maxZ'].every(key => Number.isSafeInteger(chunks[key]) && Math.abs(chunks[key]) <= 1875000) && chunks.minX <= chunks.maxX && chunks.minZ <= chunks.maxZ && ['planned', 'active', 'completed', 'maintenance'].includes(project.status);
+    }), '工程');
+    const projects = new Map(town.projects.map(project => [project.id, project]));
+    valid(town.tickets.every(ticket => {
+      const project = projects.get(ticket.projectId);
+      return project && ['completed', 'maintenance'].includes(project.status) && ticket.worldId === project.worldId && ticket.dimension === project.dimension && Number.isSafeInteger(ticket.x) && Math.abs(ticket.x) <= 30000000 && Number.isSafeInteger(ticket.y) && Math.abs(ticket.y) <= 2048 && Number.isSafeInteger(ticket.z) && Math.abs(ticket.z) <= 30000000 && string(ticket.title, 100) && string(ticket.description, 2000, true) && ['open', 'working', 'resolved'].includes(ticket.status) && string(ticket.resolution, 2000, ticket.status !== 'resolved') && (ticket.updatedBy === undefined || player(ticket.updatedBy));
+    }), '维修工单');
+    const unresolved = new Set(town.tickets.filter(ticket => ticket.status !== 'resolved').map(ticket => ticket.projectId));
+    valid(town.projects.every(project => (project.status === 'maintenance') === unresolved.has(project.id)), '工程维修状态');
+  }
+  return state;
 }
 
 // 数据仅在完整校验后加载；每次事务先落盘，再替换内存快照。
@@ -95,12 +191,7 @@ export class JsonStore {
     catch (error) { if (error.code === 'ENOENT') return { version: 3, towns: {}, sessions: {} }; throw error; }
     let state;
     try { state = JSON.parse(serialized); } catch { throw new Error('Invalid persisted JSON; restore a verified backup before starting.'); }
-    check(object(state) && state.version === 3 && object(state.towns) && object(state.sessions), 'invalid_argument', '持久化数据版本或结构无效');
-    for (const [id, town] of Object.entries(state.towns)) {
-      check(/^\d{8}$/.test(id) && object(town) && town.id === id && COLLECTIONS.every(key => Array.isArray(town[key])), 'invalid_argument', '持久化小镇数据无效');
-      check(town.members.filter(member => member.roleId === 'mayor').length === 1 && town.members.some(member => member.playerId === town.ownerId && member.roleId === 'mayor'), 'invalid_argument', '持久化镇长数据无效');
-    }
-    return state;
+    return validateState(state);
   }
   async save(state) {
     await mkdir(path.dirname(this.file), { recursive: true });
@@ -128,16 +219,21 @@ export class TownService {
     this.config = validateConfig(config);
     this.attempts = new Map();
     this.queue = Promise.resolve();
+    this.pendingRequests = 0;
   }
   async initialize() { this.state = await this.store.load(); return this; }
   handle(action, payload = {}, token) {
+    if (this.pendingRequests >= this.config.maximumPendingRequests) return Promise.reject(new ApiError('rate_limited', '服务繁忙，请稍后重试'));
+    this.pendingRequests += 1;
     const operation = this.queue.then(() => this.execute(action, payload, token));
-    this.queue = operation.catch(() => {});
-    return operation;
+    const completed = operation.finally(() => { this.pendingRequests -= 1; });
+    this.queue = completed.catch(() => {});
+    return completed;
   }
   authenticationAttempt(key) {
     const now = this.now();
     for (const [entry, window] of this.attempts) if (window.until <= now) this.attempts.delete(entry);
+    check(this.attempts.has(key) || this.attempts.size < this.config.maximumRateLimitEntries, 'rate_limited', '尝试次数过多，请稍后重试');
     const window = this.attempts.get(key) ?? { until: now + 60000, count: 0 };
     window.count += 1;
     this.attempts.set(key, window);
@@ -146,7 +242,8 @@ export class TownService {
   async execute(action, payload, token) {
     check(typeof action === 'string' && object(payload), 'invalid_argument', '请求格式无效');
     const now = this.now();
-    const state = ['town.list', 'town.snapshot'].includes(action) ? this.state : clone(this.state);
+    let state;
+    const changedTowns = new Set();
     let result;
     let mutated = false;
     if (action === 'auth.login') {
@@ -154,27 +251,40 @@ export class TownService {
       check(typeof payload.name === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(payload.name), 'invalid_argument', '游戏名必须为 1–16 位字母、数字或下划线');
       const player = { id: payload.playerId.replaceAll('-', '').toLowerCase(), name: payload.name };
       this.authenticationAttempt(`login:${player.id}`);
+      state = clone(this.state);
       const sessionToken = randomBytes(32).toString('hex');
       for (const [existingToken, session] of Object.entries(state.sessions)) if (session.expiresAt <= now) delete state.sessions[existingToken];
+      const playerSessions = Object.entries(state.sessions).filter(([, session]) => session.player.id === player.id);
+      while (playerSessions.length >= this.config.maximumSessionsPerPlayer) delete state.sessions[playerSessions.shift()[0]];
+      check(Object.keys(state.sessions).length < this.config.maximumSessions, 'rate_limited', '服务会话已满，请稍后重试');
+      for (const [, session] of playerSessions) session.player.name = player.name;
       state.sessions[tokenKey(sessionToken)] = { player, expiresAt: now + this.config.sessionHours * 3600000 };
       for (const town of Object.values(state.towns)) {
         const member = town.members.find(item => item.playerId === player.id);
-        if (member) member.name = player.name;
+        if (member && member.name !== player.name) { member.name = player.name; changedTowns.add(town.id); }
       }
       result = { token: sessionToken, player };
       mutated = true;
     } else {
-      const session = typeof token === 'string' ? state.sessions[tokenKey(token)] : undefined;
+      const session = typeof token === 'string' && /^[a-f0-9]{64}$/.test(token) ? this.state.sessions[tokenKey(token)] : undefined;
       check(session && session.expiresAt > now, 'unauthenticated', '请先使用当前游戏身份登录');
-      const context = { state, player: session.player, sessionKey: tokenKey(token), now, config: this.config };
-      ({ result, mutated } = this.dispatch(action, payload, context));
+      check(ACTIONS.has(action), 'not_found', '操作不存在');
+      state = READ_ACTIONS.has(action) ? this.state : clone(this.state);
+      const context = { state, player: session.player, sessionKey: tokenKey(token), now, config: this.config, changedTowns };
+      ({ result, mutated } = await this.dispatch(action, payload, context));
     }
-    if (mutated) { await this.store.save(state); this.state = state; }
+    if (mutated) {
+      for (const id of changedTowns) {
+        const size = townSnapshotBytes(state.towns[id]);
+        check(size <= this.config.maximumTownBytes || this.state.towns[id] && size <= townSnapshotBytes(this.state.towns[id]), 'conflict', '小镇资料容量已达上限，请缩短资料后重试');
+      }
+      await this.store.save(state); this.state = state;
+    }
     return clone(result);
   }
 
   // 所有小镇操作在同一事务队列执行；权限及周目写保护集中在这里。
-  dispatch(action, payload, context) {
+  async dispatch(action, payload, context) {
     const { state, player, now, config } = context;
     const timestamp = new Date(now).toISOString();
     const base = worldId => ({ id: identifier(), worldId, createdBy: player.id, createdByName: player.name, createdAt: timestamp });
@@ -182,6 +292,7 @@ export class TownService {
     if (action === 'auth.logout') { delete state.sessions[context.sessionKey]; return done({}); }
     if (action === 'town.list') return done(Object.values(state.towns).filter(town => town.members.some(member => member.playerId === player.id)).map(town => ({ ...publicTown(town), memberCount: town.members.length, roleId: town.members.find(member => member.playerId === player.id).roleId })), false);
     if (action === 'town.create') {
+      check(Object.keys(state.towns).length < config.maximumTowns, 'conflict', '服务小镇数量已达上限');
       let id;
       do { id = String(randomInt(0, 100000000)).padStart(8, '0'); } while (state.towns[id]);
       const initialWorld = { ...base(undefined), name: '当前周目', serverAddress: text(payload.server, '服务器', 200, true), worldKey: text(payload.worldKey ?? 'default', '世界标识', 200, true), archived: false };
@@ -189,7 +300,7 @@ export class TownService {
       state.towns[id] = {
         id, name: text(payload.name, '小镇名称', 64), introduction: text(payload.introduction, '介绍', 2000, true),
         logo: text(payload.logo, '标志', 512, true), server: text(payload.server, '服务器', 200, true),
-        ownerId: player.id, password: hashPassword(payload.password), createdAt: timestamp,
+        ownerId: player.id, password: await hashPassword(payload.password), createdAt: timestamp,
         roles: [
           { id: 'newcomer', icon: 'minecraft:dirt', name: '新人', permissions: [] },
           { id: 'member', icon: 'minecraft:cobblestone', name: '成员', permissions: [...MEMBER_PERMISSIONS] },
@@ -199,17 +310,21 @@ export class TownService {
         members: [{ playerId: player.id, name: player.name, roleId: 'mayor', joinedAt: timestamp }],
         worlds: [initialWorld], projects: [], tickets: [],
       };
+      context.changedTowns.add(id);
       return done({ townId: id });
     }
     const townId = text(payload.townId, '小镇 ID', 8);
     check(/^\d{8}$/.test(townId), 'invalid_argument', '小镇 ID 必须是八位数字');
     const town = state.towns[townId];
     check(town, 'not_found', '小镇不存在');
+    context.changedTowns.add(townId);
+    const reserveRecord = () => check(COLLECTIONS.reduce((total, key) => total + town[key].length, 0) < config.maximumTownRecords, 'conflict', '小镇记录数量已达上限，请联系服务管理者');
     let currentMember = town.members.find(member => member.playerId === player.id);
     if (action === 'town.join') {
       if (currentMember) return done({ townId }, false);
       this.authenticationAttempt(`join:${player.id}`);
-      check(validPassword(payload.password, town.password), 'forbidden', '小镇密码不正确');
+      check(await validPassword(payload.password, town.password), 'forbidden', '小镇密码不正确');
+      reserveRecord();
       town.members.push({ playerId: player.id, name: player.name, roleId: 'newcomer', joinedAt: timestamp });
       return done({ townId });
     }
@@ -277,13 +392,13 @@ export class TownService {
       const result = { town: publicTown(town), currentMember, roles: town.roles, members: town.members, worlds: town.worlds, permissions, permissionCatalog: Object.entries(PERMISSIONS).map(([id, name]) => ({ id, name })) };
       result.limits = { maximumRegionChunks: config.maximumRegionChunks };
       for (const key of ['projects', 'tickets']) result[key] = town[key].filter(item => !payload.worldId || item.worldId === payload.worldId);
-      result.projects = result.projects.map(project => ({ ...project, overlapIds: result.projects.filter(other => other.id !== project.id && other.worldId === project.worldId && other.dimension === project.dimension && project.chunks.minX <= other.chunks.maxX && project.chunks.maxX >= other.chunks.minX && project.chunks.minZ <= other.chunks.maxZ && project.chunks.maxZ >= other.chunks.minZ).map(other => other.id) }));
+      result.projects = projectsWithOverlaps(result.projects);
       return done(result, false);
     }
     if (action === 'town.update') {
       requirePermission('town.manage');
       for (const [key, maximum] of [['name', 64], ['introduction', 2000], ['logo', 512], ['server', 200]]) if (key in payload) town[key] = text(payload[key], key, maximum, key !== 'name');
-      if ('password' in payload) town.password = hashPassword(payload.password);
+      if ('password' in payload) town.password = await hashPassword(payload.password);
       return done(publicTown(town));
     }
     if (action === 'town.transfer') {
@@ -303,12 +418,12 @@ export class TownService {
       }
       if (existing && town.members.some(member => member.roleId === existing.id && member.playerId !== player.id)) requirePermission('members.manage');
       check(Array.isArray(selectedPermissions), 'invalid_argument', '权限列表无效');
-      for (const permission of selectedPermissions) check(typeof permission === 'string' && permission in PERMISSIONS && has(permission), 'forbidden', '不能授予自己没有的权限');
+      for (const permission of selectedPermissions) check(typeof permission === 'string' && Object.hasOwn(PERMISSIONS, permission) && has(permission), 'forbidden', '不能授予自己没有的权限');
       if (existing) for (const permission of existing.permissions) check(has(permission), 'forbidden', '不能管理高于自己的权限组');
       const icon = text(Object.hasOwn(payload, 'icon') ? payload.icon : existing?.icon ?? 'minecraft:cobblestone', '权限组图标', 128);
       check(DIMENSION.test(icon), 'invalid_argument', '权限组图标必须使用 Minecraft 资源 ID 格式');
       const role = { id: existing?.id ?? identifier(), name, icon, permissions: [...new Set(selectedPermissions)] };
-      if (existing) Object.assign(existing, role); else town.roles.push(role);
+      if (existing) Object.assign(existing, role); else { reserveRecord(); town.roles.push(role); }
       return done(role);
     }
     if (action === 'role.delete') {
@@ -339,6 +454,7 @@ export class TownService {
     }
     if (action === 'world.create') {
       requirePermission('worlds.manage');
+      reserveRecord();
       const world = { ...base(undefined), name: text(payload.name, '周目名称', 100), serverAddress: text(payload.serverAddress, '服务器地址', 200, true), worldKey: text(payload.worldKey, '世界标识', 200, true), archived: false };
       delete world.worldId;
       town.worlds.push(world);
@@ -357,6 +473,7 @@ export class TownService {
     }
     if (action === 'project.create') {
       requirePermission('project.create'); writableWorld(payload.worldId);
+      reserveRecord();
       const project = { ...base(payload.worldId), ...projectFields(payload) };
       checkRegion(project, project.worldId);
       town.projects.push(project); return done(project);
@@ -365,6 +482,7 @@ export class TownService {
       const project = projectWritable(payload.id); manageProject(project);
       check(!('status' in payload), 'invalid_argument', '请使用工程状态操作');
       const fields = projectFields(payload, project);
+      check(fields.dimension === project.dimension || !town.tickets.some(ticket => ticket.projectId === project.id), 'conflict', '已有维修工单的工程不能修改维度');
       checkRegion(fields, project.worldId, project);
       Object.assign(project, fields, { updatedAt: timestamp });
       return done(project);
@@ -378,6 +496,7 @@ export class TownService {
     }
     if (action === 'ticket.create') {
       requirePermission('ticket.create');
+      reserveRecord();
       const project = projectWritable(payload.projectId);
       check(!payload.worldId || project.worldId === payload.worldId, 'invalid_argument', '工单与工程必须属于同一周目');
       check(['completed', 'maintenance'].includes(project.status), 'conflict', '只有已完工工程可以报修');
