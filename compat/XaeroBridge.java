@@ -3,6 +3,7 @@ package dev.yetanothertown.client;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.mojang.blaze3d.platform.InputConstants;
 import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.List;
@@ -38,6 +39,8 @@ public final class XaeroBridge {
     private static Waypoint navigationWaypoint;
     private static WaypointSet navigationSet;
     private XaeroBridge() { }
+
+    static boolean isSelectionButton(MouseButtonEvent event) { return event.button() == InputConstants.MOUSE_BUTTON_LEFT; }
 
     public static String currentMapKey() {
         MapProcessor processor = processor();
@@ -230,7 +233,7 @@ public final class XaeroBridge {
             return Math.floorDiv((int) Math.floor(coordinate), 16);
         }
         @Override public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
-            if (selection != null && matchingMap() && event.button() == 0 && event.hasShiftDown() && event.y() > 34) {
+            if (selection != null && matchingMap() && isSelectionButton(event) && event.hasShiftDown() && event.y() > 34) {
                 dragging = true; selected = true;
                 selectedDimension = currentMapDimension();
                 startX = endX = chunk(event.x(), true); startZ = endZ = chunk(event.y(), false);
@@ -244,7 +247,7 @@ public final class XaeroBridge {
             return super.mouseDragged(event, horizontal, vertical);
         }
         @Override public boolean mouseReleased(MouseButtonEvent event) {
-            if (dragging && event.button() == 0) { endX = chunk(event.x(), true); endZ = chunk(event.y(), false); dragging = false; return true; }
+            if (dragging && isSelectionButton(event)) { endX = chunk(event.x(), true); endZ = chunk(event.y(), false); dragging = false; return true; }
             return super.mouseReleased(event);
         }
         @Override public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {

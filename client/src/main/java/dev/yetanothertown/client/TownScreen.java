@@ -3,10 +3,12 @@ package dev.yetanothertown.client;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.KeyEvent;
 import net.minecraft.network.chat.Component;
 
 import java.util.ArrayList;
@@ -30,7 +32,6 @@ public final class TownScreen extends Screen {
     private final List<Line> lines = new ArrayList<>();
     private final List<Card> cards = new ArrayList<>();
     private final List<Panel> panels = new ArrayList<>();
-    private final List<Metric> metrics = new ArrayList<>();
     private int avatarX, avatarY, logoX, logoY;
     private boolean showLogo;
     private int tab;
@@ -42,11 +43,14 @@ public final class TownScreen extends Screen {
     private int contentLeft;
     private int contentWidth;
     private int contentTop;
+    private int contentBottom;
+    private int bodyTop;
+    private int bodyBottom;
+    private TownStyle.Window window;
     private int homeScroll;
     private int maximumHomeScroll;
     private boolean homeContent;
     private record Panel(int x, int y, int width, int height, boolean accented) { }
-    private record Metric(int x, int y, int width, String label, String value, int icon) { }
     private record Line(String text, int x, int y, int color) { }
     private record Card(int x, int y, int width, String title, String subtitle, String state) { }
 
@@ -62,121 +66,119 @@ public final class TownScreen extends Screen {
 
     private void rebuild() {
         clearFocus();
-        clearWidgets(); lines.clear(); cards.clear(); panels.clear(); metrics.clear();
+        clearWidgets(); lines.clear(); cards.clear(); panels.clear();
         previousSnapshot = gateway.snapshot; previousTowns = gateway.towns;
-        int margin = Math.max(10, (width - 720) / 2);
-        contentLeft = margin;
-        contentWidth = width - margin * 2;
-        int navigationWidth = Math.min(104, (contentWidth - 8) / 3);
-        String[] tabs = {"小镇主页", "协作平台", "小镇管理"};
+        window = TownStyle.bounds(width, height, 560, 346);
+        contentLeft = window.left() + 12;
+        contentWidth = window.width() - 24;
+        bodyTop = window.top() + 48;
+        bodyBottom = window.bottom() - 34;
+        contentBottom = bodyBottom - 6;
+        int navigationWidth = Math.min(86, (contentWidth - 8) / 3);
+        String[] tabs = {"主页", "平台", "管理"};
         for (int index = 0; index < tabs.length; index++) {
             final int selected = index;
-            Button navigation = addRenderableWidget(TownStyle.button(tabs[index], margin + index * (navigationWidth + 4), 43, navigationWidth,
+            Button navigation = addRenderableWidget(TownStyle.tab(tabs[index], contentLeft + index * (navigationWidth + 4), window.top() + 25, navigationWidth,
                     () -> { tab = selected; section = 0; page = 0; rebuild(); }, tab == index));
             navigation.active = index == 0 || gateway.loggedIn() && !gateway.townId.isEmpty();
         }
-        button("×", margin + contentWidth - 20, 10, 20, this::onClose);
-        contentTop = 78;
+        button("×", window.right() - 28, window.top() + 5, 20, this::onClose);
+        contentTop = bodyTop + 6;
         if (tab == 0) {
             homeContent = true; home(); homeContent = false;
             if (homeScroll > maximumHomeScroll) { homeScroll = maximumHomeScroll; rebuild(); return; }
         }
         else {
             String[] sections = tab == 1 ? PLATFORM : MANAGEMENT;
-            int sectionWidth = Math.min(98, contentWidth / sections.length);
-            if (contentWidth < 440) {
-                button("‹", margin, 76, 22, () -> { section = (section + sections.length - 1) % sections.length; page = 0; rebuild(); });
-                label(sections[section], margin + 32, 82, ACCENT);
-                button("›", margin + 125, 76, 22, () -> { section = (section + 1) % sections.length; page = 0; rebuild(); });
+            int sectionWidth = contentWidth / sections.length;
+            if (contentWidth < 420) {
+                button("‹", contentLeft, contentTop, 22, () -> { section = (section + sections.length - 1) % sections.length; page = 0; rebuild(); });
+                String sectionTitle = sections[section] + "  " + (section + 1) + "/" + sections.length;
+                label(sectionTitle, contentLeft + (contentWidth - font.width(sectionTitle)) / 2, contentTop + 6, ACCENT);
+                button("›", contentLeft + contentWidth - 22, contentTop, 22, () -> { section = (section + 1) % sections.length; page = 0; rebuild(); });
             } else for (int index = 0; index < sections.length; index++) {
                 final int selected = index;
-                addRenderableWidget(TownStyle.button(sections[index], margin + index * sectionWidth, 76, sectionWidth - 4,
+                addRenderableWidget(TownStyle.button(sections[index], contentLeft + index * sectionWidth, contentTop, sectionWidth - 4,
                         () -> { section = selected; page = 0; rebuild(); }, section == index));
             }
-            contentTop = 108;
+            contentTop += 26;
             if (tab == 1) platform(); else management();
         }
-        button("刷新资料", margin + contentWidth - 64, height - 27, 64, () -> { gateway.refreshTowns(); gateway.refresh(); });
+        button("刷新资料", window.right() - 76, window.bottom() - 26, 64, () -> { gateway.refreshTowns(); gateway.refresh(); });
     }
 
     private void home() {
         int x = contentLeft, y = contentTop - homeScroll;
-        boolean wide = contentWidth >= 500;
-        int sideWidth = wide ? 150 : contentWidth;
-        int mainWidth = wide ? contentWidth - sideWidth - 12 : contentWidth;
-        int profileX = wide ? x + mainWidth + 12 : x;
+        boolean wide = contentWidth >= 360;
+        int sideWidth = wide ? 156 : contentWidth;
+        int mainWidth = wide ? contentWidth - sideWidth - 10 : contentWidth;
+        int profileX = wide ? x + mainWidth + 10 : x;
         int profileY = y;
-        int profileHeight = wide ? 120 : 58;
+        int profileHeight = wide ? 103 : 66;
         panels.add(new Panel(profileX, profileY, sideWidth, profileHeight, false));
-        avatarX = profileX + 12; avatarY = profileY + 12;
-        int nameX = wide ? profileX + 12 : profileX + 50;
-        int nameY = wide ? profileY + 51 : profileY + 14;
-        label(font.plainSubstrByWidth(VersionClient.playerName(), wide ? sideWidth - 24 : Math.max(40, sideWidth - 155)), nameX, nameY, TEXT);
-        label(gateway.loggedIn() ? "游戏身份已连接" : "等待服务连接", nameX, nameY + 14, gateway.loggedIn() ? TownStyle.SUCCESS : MUTED);
-        button("客户端设置", wide ? profileX + 12 : profileX + sideWidth - 92, wide ? profileY + 89 : profileY + 18, wide ? sideWidth - 24 : 80, this::connectionForm);
-        int heroY = wide ? y : y + 70;
-        int heroHeight = 128;
+        avatarX = profileX + 10; avatarY = profileY + 12;
+        int nameX = profileX + 47;
+        int nameWidth = wide ? sideWidth - 57 : sideWidth - 147;
+        label(font.plainSubstrByWidth(VersionClient.playerName(), nameWidth), nameX, profileY + 13, TEXT);
+        label(font.plainSubstrByWidth(gateway.loggedIn() ? "身份已连接" : "等待连接", nameWidth), nameX, profileY + 28, gateway.loggedIn() ? TownStyle.SUCCESS : MUTED);
+        JsonObject town = objectValue(gateway.snapshot, "town");
+        String townName = stringValue(town, "name", gateway.townId.isEmpty() ? "尚未加入小镇" : "正在载入小镇…");
+        label(font.plainSubstrByWidth("所在镇 · " + townName, sideWidth - 20), profileX + 10, profileY + 49, MUTED);
+        button("客户端设置", wide ? profileX + 10 : profileX + sideWidth - 90, wide ? profileY + 73 : profileY + 18, wide ? sideWidth - 20 : 80, this::connectionForm);
+        int heroY = wide ? y : y + profileHeight + 10;
+        int heroHeight = 153;
         panels.add(new Panel(x, heroY, mainWidth, heroHeight, true));
         showLogo = !gateway.townId.isEmpty();
-        logoX = x + 16; logoY = heroY + 18;
-        String townName = stringValue(objectValue(gateway.snapshot, "town"), "name", gateway.townId.isEmpty() ? "每座小镇，都从这里开始" : "正在载入小镇…");
-        int titleX = x + (showLogo ? 59 : 16);
-        label("TOWN / 小镇总览", titleX, heroY + 16, ACCENT);
-        label(font.plainSubstrByWidth(townName, mainWidth - (titleX - x) - 16), titleX, heroY + 33, TEXT);
+        logoX = x + 14; logoY = heroY + 14;
+        int titleX = x + (showLogo ? 55 : 12);
+        label("小镇档案", titleX, heroY + 13, ACCENT);
+        label(font.plainSubstrByWidth(gateway.townId.isEmpty() ? "从这里，开始建设" : townName, mainWidth - (titleX - x) - 12), titleX, heroY + 29, TEXT);
         if (!gateway.loggedIn()) {
-            paragraph("自动使用当前游戏 UUID 连接小镇服务。进入世界后即可创建小镇、登记工程并与伙伴协作。", x + 16, heroY + 60, mainWidth - 32, MUTED);
-            button("重新连接", x + 16, heroY + 96, Math.min(132, mainWidth - 32), () -> VersionClient.connectIdentity(this::rebuild));
+            paragraph("使用当前游戏 UUID 自动连接。进入世界后，即可与伙伴规划小镇、登记工程。", x + 12, heroY + 56, mainWidth - 24, MUTED);
+            button("重新连接", x + 12, heroY + 123, Math.min(132, mainWidth - 24), () -> VersionClient.connectIdentity(this::rebuild));
         } else if (gateway.townId.isEmpty()) {
-            paragraph("注册自己的小镇，或输入八位小镇 ID，加入伙伴的建设计划。", x + 16, heroY + 60, mainWidth - 32, MUTED);
-            int actionWidth = Math.min(120, (mainWidth - 40) / 2);
-            button("创建小镇", x + 16, heroY + 96, actionWidth, this::createTown);
-            button("通过 ID 加入", x + 24 + actionWidth, heroY + 96, actionWidth, this::joinTown);
+            paragraph("注册自己的小镇，或输入八位小镇 ID，加入伙伴的建设计划。", x + 12, heroY + 56, mainWidth - 24, MUTED);
+            int actionWidth = (mainWidth - 30) / 2;
+            button("创建小镇", x + 12, heroY + 123, actionWidth, this::createTown);
+            button("通过 ID 加入", x + 18 + actionWidth, heroY + 123, actionWidth, this::joinTown);
         } else {
-            JsonObject town = objectValue(gateway.snapshot, "town");
-            label("ID " + gateway.townId + "  ·  " + array("members").size() + " 位成员", titleX, heroY + 48, MUTED);
-            List<String> introduction = wrap(stringValue(town, "introduction", "一起规划，一起建设，让每一份投入都有回响。"), mainWidth - 32);
-            for (int index = 0; index < Math.min(2, introduction.size()); index++) label(introduction.get(index), x + 16, heroY + 70 + index * 12, MUTED);
-            int actionWidth = Math.min(120, (mainWidth - 40) / 2);
-            button("进入协作平台", x + 16, heroY + 99, actionWidth, () -> { tab = 1; page = 0; rebuild(); });
-            button("切换小镇", x + 24 + actionWidth, heroY + 99, actionWidth, this::chooseTown);
+            label("ID " + gateway.townId + "  ·  " + array("members").size() + " 位成员", x + 12, heroY + 55, MUTED);
+            List<String> introduction = wrap(stringValue(town, "introduction", "一起规划，一起建设。"), mainWidth - 24);
+            for (int index = 0; index < Math.min(2, introduction.size()); index++) label(introduction.get(index), x + 12, heroY + 73 + index * 12, MUTED);
+            int actionWidth = (mainWidth - 30) / 2;
+            button("进入协作平台", x + 12, heroY + 123, actionWidth, () -> { tab = 1; page = 0; rebuild(); });
+            button("切换小镇", x + 18 + actionWidth, heroY + 123, actionWidth, this::chooseTown);
         }
-        int metricY = heroY + heroHeight + 10;
-        if (!gateway.townId.isEmpty()) {
-            int metricWidth = (mainWidth - 12) / 3;
-            String[] names = {"登记工程", "工程任务", "待处理维修"};
-            int openTickets = 0;
-            for (JsonElement element : array("tickets")) if (!stringValue(element.getAsJsonObject(), "status").equals("resolved")) openTickets++;
-            String[] counts = {Integer.toString(array("projects").size()), Integer.toString(array("tasks").size()), Integer.toString(openTickets)};
-            for (int index = 0; index < 3; index++) metrics.add(new Metric(x + index * (metricWidth + 6), metricY, metricWidth, names[index], counts[index], index == 0 ? 1 : index == 1 ? 4 : 8));
-        }
-        int informationY = metricY + (gateway.townId.isEmpty() ? 0 : 56);
+        label(font.plainSubstrByWidth("服务器 · " + stringValue(town, "server", VersionClient.serverAddress()), mainWidth - 24), x + 12, heroY + 104, MUTED);
         int informationX = wide ? profileX : x;
-        int informationTop = wide ? profileY + profileHeight + 10 : informationY;
+        int informationTop = wide ? profileY + profileHeight + 10 : heroY + heroHeight + 10;
         int informationWidth = wide ? sideWidth : mainWidth;
-        panels.add(new Panel(informationX, informationTop, informationWidth, 110, false));
-        label("当前世界", informationX + 12, informationTop + 13, ACCENT);
-        label(font.plainSubstrByWidth(worldName(gateway.worldId), informationWidth - 24), informationX + 12, informationTop + 31, TEXT);
-        String server = stringValue(objectValue(gateway.snapshot, "town"), "server", VersionClient.serverAddress());
-        label(font.plainSubstrByWidth(server, informationWidth - 24), informationX + 12, informationTop + 47, MUTED);
-        label(roleName(stringValue(objectValue(gateway.snapshot, "currentMember"), "roleId", "尚未加入小镇")), informationX + 12, informationTop + 63, MUTED);
-        Button world = button("周目与历史地图", informationX + 12, informationTop + 80, informationWidth - 24, this::chooseWorld);
+        panels.add(new Panel(informationX, informationTop, informationWidth, 96, false));
+        label("世界与周目", informationX + 10, informationTop + 12, ACCENT);
+        label(font.plainSubstrByWidth(worldName(gateway.worldId), informationWidth - 20), informationX + 10, informationTop + 29, TEXT);
+        label(font.plainSubstrByWidth(roleName(stringValue(objectValue(gateway.snapshot, "currentMember"), "roleId", "尚未加入小镇")), informationWidth - 20), informationX + 10, informationTop + 44, MUTED);
+        Button world = button("周目与历史地图", informationX + 10, informationTop + 65, informationWidth - 20, this::chooseWorld);
         world.active = !gateway.townId.isEmpty();
-        int linksY = wide ? informationY : informationTop + 122;
-        label("小镇事务", x + 1, linksY + 4, ACCENT);
-        int linkWidth = Math.min(116, (mainWidth - 12) / 3);
-        Button create = button("注册小镇", x, linksY + 22, linkWidth, this::createTown);
-        Button join = button("加入小镇", x + linkWidth + 6, linksY + 22, linkWidth, this::joinTown);
-        Button manage = button("成员与权限", x + (linkWidth + 6) * 2, linksY + 22, linkWidth, () -> { tab = 2; section = 0; rebuild(); });
+        int linksY = wide ? heroY + heroHeight + 12 : informationTop + 108;
+        label("小镇事务", x + 2, linksY, ACCENT);
+        int openTickets = 0;
+        for (JsonElement element : array("tickets")) if (!stringValue(element.getAsJsonObject(), "status").equals("resolved")) openTickets++;
+        String overview = gateway.townId.isEmpty() ? "让每一份建设，都有伙伴同行。" : array("projects").size() + " 工程 · " + array("tasks").size() + " 任务 · " + openTickets + " 待修";
+        label(font.plainSubstrByWidth(overview, mainWidth - 4), x + 2, linksY + 16, MUTED);
+        int linkWidth = (mainWidth - 8) / 3;
+        Button create = button("注册小镇", x, linksY + 34, linkWidth, this::createTown);
+        Button join = button("加入小镇", x + linkWidth + 4, linksY + 34, linkWidth, this::joinTown);
+        Button manage = button("成员与权限", x + (linkWidth + 4) * 2, linksY + 34, linkWidth, () -> { tab = 2; section = 0; rebuild(); });
         create.active = gateway.loggedIn(); join.active = gateway.loggedIn(); manage.active = !gateway.townId.isEmpty();
-        int bottom = Math.max(linksY + 50, informationTop + 120);
-        maximumHomeScroll = Math.max(0, bottom + homeScroll - (height - 40));
+        int bottom = Math.max(linksY + 60, informationTop + 102);
+        maximumHomeScroll = Math.max(0, bottom + homeScroll - contentBottom);
     }
 
     private void platform() {
         String collection = COLLECTIONS[section];
         int y = contentTop;
         if (section <= 2) {
-            button("工程：" + (projectId.isEmpty() ? "全部" : projectName(projectId)), contentLeft, y, Math.max(110, contentWidth - 146), this::chooseProject);
+            button("工程：" + (projectId.isEmpty() ? "全部" : projectName(projectId)), contentLeft, y, contentWidth - (section == 0 ? 138 : 68), this::chooseProject);
         } else if (section == 5 && has("ticket.create") && !archived()) {
             button("堵塞", contentLeft, y, 50, () -> quickTicket("机器堵塞"));
             button("照明", contentLeft + 54, y, 50, () -> quickTicket("照明缺失"));
@@ -192,7 +194,7 @@ public final class TownScreen extends Screen {
             if (!projectId.isEmpty() && section <= 2 && !stringValue(record, section == 0 ? "id" : "projectId").equals(projectId)) continue;
             records.add(record);
         }
-        list(records, y + 29, record -> showRecord(collection, record));
+        list(records, y + 26, record -> showRecord(collection, record));
     }
 
     private void management() {
@@ -222,31 +224,33 @@ public final class TownScreen extends Screen {
     }
 
     private void list(List<JsonObject> records, int top, Consumer<JsonObject> details) {
-        int available = Math.max(1, (height - 64 - top) / 52);
+        int available = Math.max(1, (contentBottom - top - 24) / 48);
         int pages = Math.max(1, (records.size() + available - 1) / available);
         page = Math.max(0, Math.min(page, pages - 1));
         if (records.isEmpty()) {
-            int emptyHeight = Math.min(70, height - 55 - top);
+            int emptyHeight = Math.min(70, contentBottom - top - 24);
             panels.add(new Panel(contentLeft, top, contentWidth, emptyHeight, false));
-            label("还没有记录，新的计划正等待开始。", contentLeft + 18, top + 12, TEXT);
-            if (emptyHeight >= 45) label("使用上方的新建按钮，登记小镇事务。", contentLeft + 18, top + 30, MUTED);
+            label("还没有记录，新的计划正等待开始。", contentLeft + 12, top + 12, TEXT);
+            if (emptyHeight >= 45) label("使用上方的新建按钮，登记小镇事务。", contentLeft + 12, top + 30, MUTED);
         }
         for (int index = page * available; index < Math.min(records.size(), (page + 1) * available); index++) {
             JsonObject record = records.get(index);
-            int y = top + (index - page * available) * 52;
+            int y = top + (index - page * available) * 48;
             String title = stringValue(record, "name", stringValue(record, "title", stringValue(record, "text", "记录")));
             String subtitle = subtitle(record);
             String status = state(stringValue(record, "status", bool(record, "archived") ? "archived" : ""));
             cards.add(new Card(contentLeft, y, contentWidth, title, subtitle, status));
-            button("查看", contentLeft + contentWidth - 62, y + 13, 57, () -> details.accept(record));
+            button("查看", contentLeft + contentWidth - 55, y + 12, 48, () -> details.accept(record));
         }
-        int footer = height - 53;
+        int footer = contentBottom - 20;
         if (pages > 1) {
-            button("‹ 上页", contentLeft, footer, 65, () -> { page--; rebuild(); });
-            button("下页 ›", contentLeft + 135, footer, 65, () -> { page++; rebuild(); });
-            label((page + 1) + " / " + pages, contentLeft + 79, footer + 6, MUTED);
+            Button previous = button("‹", contentLeft, footer, 24, () -> { page--; rebuild(); });
+            Button next = button("›", contentLeft + 100, footer, 24, () -> { page++; rebuild(); });
+            previous.active = page > 0;
+            next.active = page < pages - 1;
+            label((page + 1) + " / " + pages, contentLeft + 36, footer + 6, MUTED);
         }
-        if (archived()) label(contentWidth < 380 && pages > 1 ? "只读" : "历史周目 · 只读浏览", contentLeft + contentWidth - (contentWidth < 380 && pages > 1 ? 30 : 120), footer + 6, ACCENT);
+        if (archived()) label("历史周目 · 只读", contentLeft + contentWidth - 96, footer + 6, ACCENT);
     }
 
     private void createRecord() {
@@ -525,7 +529,11 @@ public final class TownScreen extends Screen {
         TownForm.track(gateway.request(action, data).thenAccept(ignored -> Minecraft.getInstance().execute(() -> { gateway.status = "操作已保存"; VersionClient.show(this); rebuild(); gateway.refresh(); })));
     }
 
-    private Button button(String label, int x, int y, int width, Runnable run) { Button button = addRenderableWidget(TownStyle.button(label, x, y, width, run, label.startsWith("进入") || label.startsWith("＋"))); if (homeContent && (y < 72 || y + 20 > height - 35)) button.visible = false; return button; }
+    private Button button(String label, int x, int y, int width, Runnable run) {
+        Button button = TownStyle.button(label, x, y, width, run, label.startsWith("进入") || label.startsWith("＋"));
+        if (homeContent && (y < bodyTop || y + 20 > bodyBottom)) return button;
+        return addRenderableWidget(button);
+    }
     private void label(String text, int x, int y, int color) { lines.add(new Line(text, x, y, color)); }
     private int paragraph(String text, int x, int y, int width, int color) { for (String line : wrap(text, width)) { label(line, x, y, color); y += 13; } return y; }
     private List<String> wrap(String text, int width) { return wrapText(text, width, font); }
@@ -577,40 +585,46 @@ public final class TownScreen extends Screen {
     static String state(String value) { return switch (value) { case "pending" -> "待审批"; case "active" -> "施工中"; case "rejected" -> "已驳回"; case "review" -> "待确认"; case "completed" -> "已完成"; case "open" -> "待领取 / 待处理"; case "claimed" -> "已领取"; case "pledged" -> "已认捐"; case "submitted" -> "待确认交付"; case "confirmed" -> "已确认交付"; case "working" -> "处理中"; case "resolved" -> "已解决"; case "archived" -> "历史归档"; default -> value; }; }
 
     static void background(GuiGraphicsExtractor graphics, int width, int height) { TownStyle.background(graphics, width, height); }
-    @Override public boolean mouseScrolled(double x, double y, double horizontal, double vertical) { if (tab == 0) homeScroll = Math.max(0, Math.min(maximumHomeScroll, homeScroll - (int) vertical * 32)); else page += vertical < 0 ? 1 : -1; rebuild(); return true; }
+    private void moveScroll(int direction, boolean pageStep) {
+        if (tab == 0) homeScroll = Math.max(0, Math.min(maximumHomeScroll, homeScroll + direction * (pageStep ? Math.max(32, bodyBottom - bodyTop - 20) : 32)));
+        else page += direction;
+        rebuild();
+    }
+    @Override public boolean mouseScrolled(double x, double y, double horizontal, double vertical) {
+        if (x < contentLeft || x > contentLeft + contentWidth || y < bodyTop || y > bodyBottom || vertical == 0) return super.mouseScrolled(x, y, horizontal, vertical);
+        moveScroll(vertical < 0 ? 1 : -1, false);
+        return true;
+    }
+    @Override public boolean keyPressed(KeyEvent event) {
+        if (event.key() == InputConstants.KEY_PAGEUP || event.key() == InputConstants.KEY_PAGEDOWN) {
+            moveScroll(event.key() == InputConstants.KEY_PAGEUP ? -1 : 1, true);
+            return true;
+        }
+        return super.keyPressed(event);
+    }
 
     @Override public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
         background(graphics, width, height);
-        int headerX = contentLeft;
+        TownStyle.window(graphics, window, bodyTop, bodyBottom);
         double progress = gateway.config().animationEnabled ? Math.min(1, (System.nanoTime() - openedAt) / 260_000_000d) : 1;
         double eased = 1 - Math.pow(1 - progress, 3);
-        TownStyle.panel(graphics, headerX, 10, 22, 22, true);
-        TownStyle.icon(graphics, 0, headerX + 7, 17, ACCENT);
-        graphics.text(font, "Yet Another Town", headerX + 31 + (int) ((1 - eased) * 6), 12, TEXT, true);
-        graphics.text(font, "一起规划  /  一起建设", headerX + 31, 25, MUTED, false);
-        graphics.fill(headerX, 69, headerX + contentWidth, 70, TownStyle.LINE);
-        graphics.fill(headerX, height - 35, headerX + contentWidth, height - 34, TownStyle.LINE);
-        graphics.enableScissor(contentLeft - 2, 72, contentLeft + contentWidth + 3, height - 35);
+        TownStyle.icon(graphics, 0, contentLeft + 1, window.top() + 10, TownStyle.FRAME_TEXT);
+        graphics.text(font, "Yet Another Town", contentLeft + 16 + (int) ((1 - eased) * 4), window.top() + 10, TownStyle.FRAME_TEXT, false);
+        graphics.enableScissor(contentLeft, bodyTop, contentLeft + contentWidth, bodyBottom);
         for (Panel panel : panels) TownStyle.panel(graphics, panel.x(), panel.y(), panel.width(), panel.height(), panel.accented());
-        for (Metric metric : metrics) {
-            TownStyle.panel(graphics, metric.x(), metric.y(), metric.width(), 46, false);
-            TownStyle.icon(graphics, metric.icon(), metric.x() + 10, metric.y() + 10, ACCENT);
-            graphics.text(font, metric.value(), metric.x() + 25, metric.y() + 9, TEXT, true);
-            graphics.text(font, metric.label(), metric.x() + 10, metric.y() + 28, MUTED, false);
-        }
         for (Card card : cards) {
-            TownStyle.panel(graphics, card.x(), card.y(), card.width(), 46, false);
-            TownStyle.panel(graphics, card.x() + 9, card.y() + 10, 25, 25, false);
-            TownStyle.icon(graphics, tab == 1 ? section + 1 : 3, card.x() + 17, card.y() + 18, ACCENT);
-            int textWidth = card.width() - 128;
-            boolean badge = !card.state().isEmpty() && card.width() >= 400;
-            graphics.text(font, font.plainSubstrByWidth(card.title(), textWidth - (badge ? 80 : 0)), card.x() + 44, card.y() + 9, TEXT, true);
-            graphics.text(font, font.plainSubstrByWidth((!badge && !card.state().isEmpty() ? card.state() + " · " : "") + card.subtitle(), textWidth), card.x() + 44, card.y() + 26, MUTED, false);
-            if (badge) {
-                int badgeWidth = Math.min(79, font.width(card.state()) + 12);
-                int badgeX = card.x() + card.width() - 76 - badgeWidth;
-                graphics.fill(badgeX, card.y() + 8, badgeX + badgeWidth, card.y() + 22, TownStyle.RAISED);
-                graphics.text(font, card.state(), badgeX + 6, card.y() + 11, ACCENT, false);
+            TownStyle.panel(graphics, card.x(), card.y(), card.width(), 44, false);
+            TownStyle.panel(graphics, card.x() + 7, card.y() + 10, 23, 23, false);
+            TownStyle.icon(graphics, tab == 1 ? section + 1 : 3, card.x() + 15, card.y() + 18, ACCENT);
+            int textWidth = card.width() - 104;
+            int titleY = card.y() + 9;
+            int badgeWidth = card.state().isEmpty() ? 0 : Math.min(79, font.width(card.state()) + 12);
+            graphics.text(font, font.plainSubstrByWidth(card.title(), Math.max(0, textWidth - (badgeWidth > 0 ? badgeWidth + 8 : 0))), card.x() + 38, titleY, TEXT, true);
+            graphics.text(font, font.plainSubstrByWidth(card.subtitle(), textWidth), card.x() + 38, card.y() + 26, MUTED, false);
+            if (badgeWidth > 0) {
+                int badgeX = card.x() + card.width() - 66 - badgeWidth;
+                graphics.fill(badgeX, titleY - 3, badgeX + badgeWidth, titleY + 11, TownStyle.RAISED);
+                graphics.text(font, font.plainSubstrByWidth(card.state(), badgeWidth - 12), badgeX + 6, titleY, ACCENT, false);
             }
         }
         for (Line line : lines) graphics.text(font, font.plainSubstrByWidth(line.text(), contentLeft + contentWidth - line.x() - 8), line.x(), line.y(), line.color(), false);
@@ -624,13 +638,14 @@ public final class TownScreen extends Screen {
         graphics.disableScissor();
         super.extractRenderState(graphics, mouseX, mouseY, delta);
         if (tab == 0 && maximumHomeScroll > 0) {
-            int trackHeight = Math.max(12, height - 125);
-            int scrollbarX = contentLeft + contentWidth + 5;
-            graphics.fill(scrollbarX, 78, scrollbarX + 2, height - 42, TownStyle.LINE);
-            int thumbY = 78 + (int) ((trackHeight - 16) * (double) homeScroll / maximumHomeScroll);
-            graphics.fill(scrollbarX, thumbY, scrollbarX + 2, thumbY + 16, ACCENT);
+            int trackHeight = bodyBottom - bodyTop;
+            int scrollbarX = window.right() - 10;
+            int thumbHeight = Math.max(14, trackHeight * trackHeight / (trackHeight + maximumHomeScroll));
+            graphics.fill(scrollbarX, bodyTop, scrollbarX + 2, bodyBottom, TownStyle.LINE);
+            int thumbY = bodyTop + (trackHeight - thumbHeight) * homeScroll / maximumHomeScroll;
+            graphics.fill(scrollbarX, thumbY, scrollbarX + 2, thumbY + thumbHeight, ACCENT);
         }
-        graphics.fill(contentLeft, height - 20, contentLeft + 3, height - 17, gateway.loggedIn() ? TownStyle.SUCCESS : MUTED);
-        graphics.text(font, font.plainSubstrByWidth(gateway.status, contentWidth - 84), contentLeft + 9, height - 22, MUTED, false);
+        graphics.fill(contentLeft, window.bottom() - 19, contentLeft + 3, window.bottom() - 16, gateway.loggedIn() ? 0xFF42643C : TownStyle.FRAME_MUTED);
+        graphics.text(font, font.plainSubstrByWidth(gateway.status, contentWidth - 84), contentLeft + 9, window.bottom() - 20, TownStyle.FRAME_MUTED, false);
     }
 }

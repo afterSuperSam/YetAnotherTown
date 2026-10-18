@@ -90,7 +90,8 @@ const bootstrap = await files(path.join(root, 'bootstrap', 'src', 'main', 'java'
 await run(javac, ['--release', '25', '-encoding', 'UTF-8', '-proc:none', '-cp', classpaths['26.3'].join(path.delimiter), '-d', classes, ...bootstrap]);
 await cp(path.join(root, 'client', 'src', 'main', 'resources'), classes, { recursive: true });
 const metadata = JSON.parse(await readFile(path.join(classes, 'fabric.mod.json'), 'utf8'));
-const artifact = path.join(build, 'libs', `yetanothertown-${metadata.version}.jar`);
+const artifactVersion = metadata.version.replace(/-alpha\.(\d+)$/, 'alpha$1');
+const artifact = path.join(build, 'libs', `yetanothertown-${artifactVersion}.jar`);
 await mkdir(path.dirname(artifact), { recursive: true });
 await run(jar, ['--create', '--file', artifact, '--date=2026-10-18T00:00:00Z', '-C', classes, '.']);
 const verifier = path.join(build, 'verifier');

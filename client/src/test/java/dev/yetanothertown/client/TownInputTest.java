@@ -2,6 +2,8 @@ package dev.yetanothertown.client;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.KeyMapping;
+import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.client.input.MouseButtonInfo;
 
 /** 直接驱动原版按键分发与生产映射，不创建游戏实例或窗口。 */
 public final class TownInputTest {
@@ -12,6 +14,12 @@ public final class TownInputTest {
     }
 
     public static void main(String[] arguments) {
+        MouseButtonEvent selection = new MouseButtonEvent(120, 100, new MouseButtonInfo(InputConstants.MOUSE_BUTTON_LEFT, InputConstants.MOD_SHIFT));
+        require(selection.hasShiftDown(), "Native Shift modifier must reach the map event");
+        require(XaeroBridge.isSelectionButton(selection), "Physical Shift + left mouse must begin the map selection");
+        require(XaeroBridge.isSelectionButton(new MouseButtonEvent(120, 100, new MouseButtonInfo(InputConstants.MOUSE_BUTTON_LEFT, 0))), "Releasing Shift before left mouse must still finish the selection");
+        require(!XaeroBridge.isSelectionButton(new MouseButtonEvent(120, 100, new MouseButtonInfo(InputConstants.MOUSE_BUTTON_RIGHT, InputConstants.MOD_SHIFT))), "Right mouse must remain available to Xaero");
+        require(!XaeroBridge.isSelectionButton(new MouseButtonEvent(120, 100, new MouseButtonInfo(InputConstants.MOUSE_BUTTON_MIDDLE, InputConstants.MOD_SHIFT))), "Middle mouse must remain available to Xaero");
         KeyMapping[] mappings = VersionClient.createKeyMappings();
         KeyMapping.click(InputConstants.getKey("key.keyboard.k"));
         require(mappings[0].consumeClick(), "Physical K did not reach the town menu mapping");
