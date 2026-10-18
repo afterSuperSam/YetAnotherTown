@@ -1,4 +1,4 @@
-package dev.yetanothertown.client;
+package dev.ohmytown.client;
 
 import com.google.gson.JsonObject;
 import com.mojang.blaze3d.platform.InputConstants;
@@ -21,18 +21,19 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.List;
 
-import static dev.yetanothertown.client.TownGateway.object;
+import static dev.ohmytown.client.TownGateway.object;
 
 /** 统一入口、当前游戏身份与版本间客户端生命周期。 */
 public final class VersionClient {
-    private static final System.Logger LOGGER = System.getLogger("YetAnotherTown");
-    private static final KeyMapping.Category KEY_CATEGORY = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("yetanothertown", "general"));
+    private static final System.Logger LOGGER = System.getLogger("Oh My Town");
+    private static final KeyMapping.Category KEY_CATEGORY = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("ohmytown", "general"));
     private static KeyMapping openKey;
-    private static KeyMapping nearbyKey;
+    private static KeyMapping projectKey;
     private static long nextRefresh;
     private static boolean refreshing;
     private static boolean connectingIdentity;
     private static long nextIdentityAttempt;
+    private static long nextMapBindingAttempt;
     private static String observedIdentity = "";
     private static Method screenSetter;
     private static Method screenGetter;
@@ -53,16 +54,13 @@ public final class VersionClient {
         gateway.initialize(FabricLoader.getInstance().getConfigDir());
         KeyMapping[] mappings = createKeyMappings();
         openKey = KeyMappingHelper.registerKeyMapping(mappings[0]);
-        nearbyKey = KeyMappingHelper.registerKeyMapping(mappings[1]);
+        projectKey = KeyMappingHelper.registerKeyMapping(mappings[1]);
         TownHud.initialize();
+        XaeroBridge.initialize();
         ClientLifecycleEvents.CLIENT_STARTED.register(client -> {
             initializeScreens(client);
-            if (gateway.needsKeyMigration()) {
-                if (repairLegacyKeyMappings(mappings)) client.options.save();
-                gateway.finishKeyMigration();
-            }
             skin = client.getSkinManager().createLookup(client.getGameProfile(), false);
-            LOGGER.log(System.Logger.Level.INFO, "YetAnotherTown client initialized");
+            LOGGER.log(System.Logger.Level.INFO, "Oh My Town client initialized");
         });
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             long now = System.nanoTime();
@@ -73,12 +71,21 @@ public final class VersionClient {
                 nextIdentityAttempt = 0;
             }
             if (!identity.isEmpty() && !gateway.loggedIn() && !connectingIdentity && now >= nextIdentityAttempt) connectIdentity(() -> {});
-            boolean openRequested = false, nearbyRequested = false;
+            if (client.player != null && now >= nextMapBindingAttempt) {
+                try { gateway.autoBindMap(serverAddress(), dimension(), XaeroBridge.playerMapKey(dimension())); }
+                catch (IllegalStateException | IllegalArgumentException exception) {
+                    nextMapBindingAttempt = now + gateway.config().pollIntervalSeconds * 1_000_000_000L;
+                    gateway.status = exception.getMessage();
+                    LOGGER.log(System.Logger.Level.WARNING, "Automatic map binding failed", exception);
+                }
+            }
+            TownHud.tick();
+            boolean openRequested = false, projectRequested = false;
             while (openKey.consumeClick()) openRequested = true;
-            while (nearbyKey.consumeClick()) nearbyRequested = true;
+            while (projectKey.consumeClick()) projectRequested = true;
             if (client.player != null && currentScreen() == null) {
                 if (openRequested) show(new TownScreen());
-                else if (nearbyRequested) TownHud.openNearby();
+                else if (projectRequested) TownHud.openProject();
             }
             if (navigation != null && (!gateway.loggedIn() || !navigationTown.equals(gateway.townId) || !navigationWorld.equals(gateway.worldId) || !XaeroBridge.isCurrentWorld())) clearNavigation();
             if (gateway.loggedIn() && !gateway.townId.isEmpty() && !refreshing && now >= nextRefresh) {
@@ -91,35 +98,27 @@ public final class VersionClient {
 
     static KeyMapping[] createKeyMappings() {
         return new KeyMapping[] {
-            new KeyMapping("key.yetanothertown.open", InputConstants.KEY_K, KEY_CATEGORY),
-            new KeyMapping("key.yetanothertown.nearby", InputConstants.KEY_H, KEY_CATEGORY)
+            new KeyMapping("key.ohmytown.open", InputConstants.KEY_K, KEY_CATEGORY),
+            new KeyMapping("key.ohmytown.project", InputConstants.KEY_X, KEY_CATEGORY)
         };
-    }
-
-    /** 只修复旧版在 SDL 下保存的默认错误绑定，保留其他原版重绑。 */
-    static boolean repairLegacyKeyMappings(KeyMapping[] mappings) {
-        if (InputConstants.KEY_K == 75) return false;
-        boolean changed = false;
-        if (mappings[0].saveString().equals("key.keyboard.page.up")) { mappings[0].setKey(mappings[0].getDefaultKey()); changed = true; }
-        if (mappings[1].saveString().equals("key.keyboard.pause")) { mappings[1].setKey(mappings[1].getDefaultKey()); changed = true; }
-        if (changed) KeyMapping.resetMapping();
-        return changed;
     }
 
     public static Screen createConfigScreen(Screen parent) {
         TownGateway gateway = TownGateway.get();
         var settings = gateway.config();
-        return new TownForm(parent, "YetAnotherTown · 配置", List.of(
+        return new TownForm(parent, "Oh My Town · 配置", List.of(
                 TownForm.Field.text("endpoint", "服务地址", settings.endpoint),
-                TownForm.Field.number("nearbyRadius", "附近提示最大距离（方块）", settings.nearbyRadius),
+                TownForm.Field.number("entrySubtitleSeconds", "进入项目字幕（秒，0关闭）", settings.entrySubtitleSeconds),
+                TownForm.Field.number("entryCooldownSeconds", "重复进入提示间隔（秒）", settings.entryCooldownSeconds),
                 TownForm.Field.number("pollIntervalSeconds", "资料刷新间隔（秒）", settings.pollIntervalSeconds),
-                TownForm.Field.toggle("animationEnabled", "界面动画", settings.animationEnabled)),
-                List.of("按键在原版设置的 YetAnotherTown 分类中修改，跟随游戏设置保存。"),
+                TownForm.Field.toggle("animationEnabled", "界面动画", settings.animationEnabled),
+                TownForm.Field.toggle("projectOverlayEnabled", "在 Xaero 地图显示项目", settings.projectOverlayEnabled)),
+                List.of("按键在原版设置的 Oh My Town 分类中修改，跟随游戏设置保存。"),
                 List.of(new TownForm.Action("打开原版按键绑定设置", () -> show(new KeyBindsScreen(currentScreen(), Minecraft.getInstance().options))),
                         new TownForm.Action("打开小镇协作主页", () -> show(new TownScreen(currentScreen())))),
                 values -> {
-                    gateway.configure(values.get("endpoint").getAsString(), values.get("nearbyRadius").getAsInt(),
-                            values.get("pollIntervalSeconds").getAsInt(), values.get("animationEnabled").getAsBoolean());
+                    gateway.configure(values.get("endpoint").getAsString(), values.get("entrySubtitleSeconds").getAsInt(), values.get("entryCooldownSeconds").getAsInt(),
+                            values.get("pollIntervalSeconds").getAsInt(), values.get("animationEnabled").getAsBoolean(), values.get("projectOverlayEnabled").getAsBoolean());
                     show(parent);
                 });
     }
@@ -191,7 +190,7 @@ public final class VersionClient {
         return object("dimension", dimension(), "x", player == null ? 0 : (int) Math.floor(player.getX()), "y", player == null ? 64 : (int) Math.floor(player.getY()), "z", player == null ? 0 : (int) Math.floor(player.getZ()));
     }
     static void copy(String text) { Minecraft.getInstance().keyboardHandler.setClipboard(text); }
-    static String nearbyKeyLabel() { return nearbyKey == null ? "H" : nearbyKey.getTranslatedKeyMessage().getString(); }
+    static String projectKeyLabel() { return projectKey == null ? "X" : projectKey.isUnbound() ? "" : projectKey.getTranslatedKeyMessage().getString(); }
 
     static void drawAvatar(GuiGraphicsExtractor graphics, int x, int y, int size) {
         graphics.fill(x - 1, y - 1, x + size + 1, y + size + 1, TownScreen.ACCENT);

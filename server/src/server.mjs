@@ -24,7 +24,7 @@ export function createHttpServer(service, config, logger = console) {
       const window = windows.get(address) ?? { until: now + 60000, count: 0 };
       window.count += 1; windows.set(address, window);
       if (window.count > config.requestsPerMinute || windows.size > 10000) throw new ApiError('rate_limited', '请求过多，请稍后重试');
-      if (request.method === 'GET' && request.url === '/health') { send(200, { ok: true, data: { version: '1.0.0-alpha.5' } }); return; }
+      if (request.method === 'GET' && request.url === '/health') { send(200, { ok: true, data: { version: '1.0.0-alpha.6' } }); return; }
       if (request.url !== '/api') throw new ApiError('not_found', '接口不存在');
       if (request.method !== 'POST') { response.setHeader('Allow', 'POST'); send(405, { ok: false, error: { code: 'invalid_argument', message: '此接口只接受 POST 请求' } }); return; }
       if (!/^application\/json(?:\s*;|$)/i.test(request.headers['content-type'] ?? '')) throw new ApiError('unsupported_media_type', '请求必须使用 application/json');
@@ -66,7 +66,7 @@ export async function start(configFile = path.resolve(fileURLToPath(new URL('..'
   const service = await new TownService({ store: new JsonStore(dataFile), config }).initialize();
   const server = createHttpServer(service, config);
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.port, config.host, resolve); });
-  console.log(`YetAnotherTown service listening on ${config.host}:${config.port}`);
+  console.log(`Oh My Town service listening on ${config.host}:${config.port}`);
   const close = () => { server.close(); server.closeIdleConnections(); };
   process.once('SIGINT', close); process.once('SIGTERM', close);
   return { server, service };

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const cache = path.join(root, '.cache', 'dependencies');
 export const versions = ['26.3', '26.2', '26.1.2'];
-const headers = { 'User-Agent': 'YetAnotherTown/1.0.0 (local development)' };
+const headers = { 'User-Agent': 'OhMyTown/1.0.0 (local development)' };
 export async function download(url, target, checksum, algorithm = 'sha1') {
   await mkdir(path.dirname(target), { recursive: true });
   try {
@@ -48,6 +48,7 @@ async function prepareLocked(lock, compatibility) {
     console.log(`${version}: locked dependencies verified`);
   }
   result.loader = await download(lock.loader.url, path.join(cache, `fabric-loader-${lock.loader.version}.jar`), lock.loader.sha256, 'sha256');
+  result.mixinCompile = await download(lock.mixinCompile.url, path.join(cache, `sponge-mixin-${lock.mixinCompile.version}.jar`), lock.mixinCompile.sha256, 'sha256');
   result.loaders = [{ ...lock.loader, jar: result.loader }];
   if (compatibility) for (const value of lock.alternativeLoaders ?? []) result.loaders.push({ ...value, jar: await download(value.url, path.join(cache, `fabric-loader-${value.version}.jar`), value.sha256, 'sha256') });
   await writeFile(path.join(cache, 'classpath.json'), JSON.stringify(result, null, 2));

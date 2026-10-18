@@ -1,13 +1,11 @@
 {
   "host": "127.0.0.1",
   "port": 37841,
-  "dataFile": "./data/town.json",
+  "dataFile": "./data/ohmytown.json",
   "sessionHours": 168,
   "requestTimeoutSeconds": 15,
   "maxBodyBytes": 65536,
   "requestsPerMinute": 120,
   "authenticationAttemptsPerMinute": 10,
-  "defaultProximityRadius": 32,
-  "maximumProximityRadius": 256,
   "maximumRegionChunks": 65536
 }

@@ -1,4 +1,4 @@
-package dev.yetanothertown.client;
+package dev.ohmytown.client;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class TownGateway {
     public static final TownGateway INSTANCE = new TownGateway();
     private static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
-    private static final System.Logger LOGGER = System.getLogger("YetAnotherTown");
+    private static final System.Logger LOGGER = System.getLogger("Oh My Town");
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private final AtomicLong selection = new AtomicLong();
     private final AtomicLong authentication = new AtomicLong();
@@ -64,12 +64,12 @@ public final class TownGateway {
     }
 
     public synchronized void initialize(Path directory) {
-        configurationPath = directory.resolve("yetanothertown.json");
+        configurationPath = directory.resolve("ohmytown.json");
         try {
             if (Files.exists(configurationPath)) {
                 JsonObject parsed = JSON.fromJson(Files.readString(configurationPath), JsonObject.class);
                 if (parsed == null) throw new IllegalArgumentException("客户端配置不能为空");
-                Set<String> allowed = Set.of("endpoint", "openKey", "nearbyKey", "keyBindingsVersion", "nearbyRadius", "pollIntervalSeconds", "animationEnabled", "mapBindings");
+                Set<String> allowed = Set.of("endpoint", "entrySubtitleSeconds", "entryCooldownSeconds", "projectOverlayEnabled", "pollIntervalSeconds", "animationEnabled", "mapBindings");
                 for (String key : parsed.keySet()) if (!allowed.contains(key)) throw new IllegalArgumentException("未知客户端配置项：" + key);
                 for (String key : parsed.keySet()) {
                     JsonElement value = parsed.get(key);
@@ -85,14 +85,12 @@ public final class TownGateway {
                         var primitive = value.getAsJsonPrimitive();
                         valid = switch (key) {
                             case "endpoint" -> primitive.isString();
-                            case "animationEnabled" -> primitive.isBoolean();
+                            case "animationEnabled", "projectOverlayEnabled" -> primitive.isBoolean();
                             default -> primitive.isNumber() && primitive.getAsBigDecimal().stripTrailingZeros().scale() <= 0;
                         };
                     }
                     if (!valid) throw new IllegalArgumentException("客户端配置类型错误：" + key);
                 }
-                parsed.remove("openKey");
-                parsed.remove("nearbyKey");
                 ClientConfig loaded = JSON.fromJson(parsed, ClientConfig.class);
                 loaded.validate();
                 configuration = loaded;
@@ -107,13 +105,15 @@ public final class TownGateway {
     }
 
     public synchronized void configure(String endpoint) {
-        configure(endpoint, configuration.nearbyRadius, configuration.pollIntervalSeconds, configuration.animationEnabled);
+        configure(endpoint, configuration.entrySubtitleSeconds, configuration.entryCooldownSeconds, configuration.pollIntervalSeconds, configuration.animationEnabled, configuration.projectOverlayEnabled);
     }
 
-    public synchronized void configure(String endpoint, int nearbyRadius, int pollIntervalSeconds, boolean animationEnabled) {
+    public synchronized void configure(String endpoint, int entrySubtitleSeconds, int entryCooldownSeconds, int pollIntervalSeconds, boolean animationEnabled, boolean projectOverlayEnabled) {
         ClientConfig replacement = JSON.fromJson(JSON.toJson(configuration), ClientConfig.class);
         replacement.endpoint = endpoint.strip().replaceAll("/+$", "");
-        replacement.nearbyRadius = nearbyRadius;
+        replacement.entrySubtitleSeconds = entrySubtitleSeconds;
+        replacement.entryCooldownSeconds = entryCooldownSeconds;
+        replacement.projectOverlayEnabled = projectOverlayEnabled;
         replacement.pollIntervalSeconds = pollIntervalSeconds;
         replacement.animationEnabled = animationEnabled;
         replacement.validate();
@@ -131,15 +131,9 @@ public final class TownGateway {
         } else status = "客户端配置已保存";
     }
 
-    public boolean needsKeyMigration() { return configuration.keyBindingsVersion == 0; }
-
-    public synchronized void finishKeyMigration() {
-        ClientConfig previous = configuration;
-        ClientConfig replacement = JSON.fromJson(JSON.toJson(previous), ClientConfig.class);
-        replacement.keyBindingsVersion = 1;
-        configuration = replacement;
-        try { save(); }
-        catch (IOException exception) { configuration = previous; throw new IllegalStateException("保存按键迁移状态失败", exception); }
+    public synchronized void setProjectOverlayEnabled(boolean enabled) {
+        if (configuration.projectOverlayEnabled == enabled) return;
+        configure(configuration.endpoint, configuration.entrySubtitleSeconds, configuration.entryCooldownSeconds, configuration.pollIntervalSeconds, configuration.animationEnabled, enabled);
     }
 
     public String getBoundMapKey(String dimension) {
@@ -152,6 +146,25 @@ public final class TownGateway {
 
     public synchronized void unbindMap(String dimension) {
         updateBinding(dimension, null);
+    }
+
+    /** 唯一匹配的当前周目首次关联玩家底图，已有或历史绑定始终保留。 */
+    public synchronized boolean autoBindMap(String serverAddress, String dimension, String mapKey) {
+        if (!loggedIn() || worldId.isEmpty() || mapKey.isEmpty() || !getBoundMapKey(dimension).isEmpty() || !snapshot.has("worlds")) return false;
+        String candidate = "";
+        for (JsonElement element : snapshot.getAsJsonArray("worlds")) {
+            JsonObject world = element.getAsJsonObject();
+            String address = world.has("serverAddress") ? world.get("serverAddress").getAsString() : "";
+            if (world.get("archived").getAsBoolean() || !address.isBlank() && !address.equalsIgnoreCase(serverAddress)) continue;
+            if (!candidate.isEmpty()) return false;
+            candidate = world.get("id").getAsString();
+        }
+        if (!worldId.equals(candidate)) return false;
+        String scope = configuration.endpoint + "#" + townId + "/";
+        for (var binding : configuration.mapBindings.entrySet())
+            if (binding.getKey().startsWith(scope) && binding.getKey().endsWith("/" + dimension) && binding.getValue().equals(mapKey)) return false;
+        bindCurrentMap(dimension, mapKey);
+        return true;
     }
 
     private String bindingKey(String dimension) {
@@ -373,10 +386,11 @@ public final class TownGateway {
 
     public static final class ClientConfig {
         public String endpoint = "http://127.0.0.1:37841";
-        public int keyBindingsVersion = 0;
-        public int nearbyRadius = 48;
+        public int entrySubtitleSeconds = 3;
+        public int entryCooldownSeconds = 8;
         public int pollIntervalSeconds = 10;
         public boolean animationEnabled = true;
+        public boolean projectOverlayEnabled = true;
         public Map<String, String> mapBindings = new TreeMap<>();
 
         public void validate() {
@@ -390,8 +404,8 @@ public final class TownGateway {
                     || (address.getPath() != null && !address.getPath().isEmpty())
                     || !("https".equals(address.getScheme()) || "http".equals(address.getScheme()) && local))
                 throw new IllegalArgumentException("服务地址需为 HTTPS；本地服务可使用 HTTP，地址不带路径");
-            if (keyBindingsVersion < 0 || keyBindingsVersion > 1) throw new IllegalArgumentException("按键迁移版本无效");
-            if (nearbyRadius < 1 || nearbyRadius > 512) throw new IllegalArgumentException("附近提示距离需在 1～512 格之间");
+            if (entrySubtitleSeconds < 0 || entrySubtitleSeconds > 10) throw new IllegalArgumentException("进入项目字幕时长需在 0～10 秒之间，0 为关闭");
+            if (entryCooldownSeconds < 1 || entryCooldownSeconds > 120) throw new IllegalArgumentException("进入项目提示间隔需在 1～120 秒之间");
             if (pollIntervalSeconds < 2 || pollIntervalSeconds > 300) throw new IllegalArgumentException("刷新间隔需在 2～300 秒之间");
             if (mapBindings == null || mapBindings.size() > 10000) throw new IllegalArgumentException("个人地图绑定最多保存 10000 项");
             for (var binding : mapBindings.entrySet()) {

@@ -3,24 +3,24 @@ import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 export const DEFAULT_CONFIG = Object.freeze({
-  host: '127.0.0.1', port: 37841, dataFile: './data/town.json', sessionHours: 168,
+  host: '127.0.0.1', port: 37841, dataFile: './data/ohmytown.json', sessionHours: 168,
   requestTimeoutSeconds: 15, maxBodyBytes: 65536,
   requestsPerMinute: 120, authenticationAttemptsPerMinute: 10,
-  defaultProximityRadius: 32, maximumProximityRadius: 256, maximumRegionChunks: 65536,
+  maximumRegionChunks: 65536,
 });
 
 export const PERMISSIONS = Object.freeze({
   'town.manage': '管理小镇资料与密码', 'members.manage': '审核与管理成员',
   'roles.manage': '管理权限组', 'worlds.manage': '管理世界与周目',
   'project.create': '登记建设工程', 'project.edit': '维护所属工程',
-  'project.approve': '管理所有工程', 'message.create': '发布空间留言',
+  'project.approve': '管理所有工程',
   'ticket.create': '报告维修工单',
   'ticket.manage': '处理维修工单',
 });
 const MEMBER_PERMISSIONS = [
-  'project.create', 'project.edit', 'message.create', 'ticket.create',
+  'project.create', 'project.edit', 'ticket.create',
 ];
-const COLLECTIONS = ['roles', 'members', 'worlds', 'projects', 'messages', 'tickets'];
+const COLLECTIONS = ['roles', 'members', 'worlds', 'projects', 'tickets'];
 const DIMENSION = /^[a-z0-9_.-]+:[a-z0-9_/.-]+$/;
 
 export class ApiError extends Error {
@@ -37,7 +37,6 @@ export function validateConfig(input = {}) {
   check(object(input), 'invalid_argument', '配置必须是 JSON 对象');
   const result = { ...DEFAULT_CONFIG };
   for (const [key, value] of Object.entries(input)) {
-    if (key === 'challengeSeconds') continue;
     check(Object.hasOwn(DEFAULT_CONFIG, key), 'invalid_argument', `未知配置项：${key}`);
     result[key] = value;
   }
@@ -46,13 +45,11 @@ export function validateConfig(input = {}) {
     port: [1, 65535], sessionHours: [1, 8760],
     requestTimeoutSeconds: [1, 120], maxBodyBytes: [1024, 1048576],
     requestsPerMinute: [1, 10000], authenticationAttemptsPerMinute: [1, 100],
-    defaultProximityRadius: [1, 1024], maximumProximityRadius: [1, 1024],
     maximumRegionChunks: [1, 1048576],
   };
   for (const [key, [minimum, maximum]] of Object.entries(limits)) {
     check(Number.isSafeInteger(result[key]) && result[key] >= minimum && result[key] <= maximum, 'invalid_argument', `配置 ${key} 必须为 ${minimum}–${maximum} 的整数`);
   }
-  check(result.defaultProximityRadius <= result.maximumProximityRadius, 'invalid_argument', '默认提示距离不得超过最大距离');
   return Object.freeze(result);
 }
 
@@ -84,7 +81,7 @@ function validPassword(password, saved) {
   return timingSafeEqual(scryptSync(value, saved.salt, 32), Buffer.from(saved.hash, 'hex'));
 }
 function publicTown(town) {
-  const { password, legacy, ...details } = town;
+  const { password, ...details } = town;
   for (const key of COLLECTIONS) delete details[key];
   return { ...details, passwordEnabled: Boolean(password) };
 }
@@ -95,32 +92,13 @@ export class JsonStore {
   async load() {
     let serialized;
     try { serialized = await readFile(this.file, 'utf8'); }
-    catch (error) { if (error.code === 'ENOENT') return { version: 2, towns: {}, sessions: {} }; throw error; }
+    catch (error) { if (error.code === 'ENOENT') return { version: 3, towns: {}, sessions: {} }; throw error; }
     let state;
     try { state = JSON.parse(serialized); } catch { throw new Error('Invalid persisted JSON; restore a verified backup before starting.'); }
-    check(object(state) && [1, 2].includes(state.version) && object(state.towns) && object(state.sessions), 'invalid_argument', '持久化数据版本或结构无效');
+    check(object(state) && state.version === 3 && object(state.towns) && object(state.sessions), 'invalid_argument', '持久化数据版本或结构无效');
     for (const [id, town] of Object.entries(state.towns)) {
       check(/^\d{8}$/.test(id) && object(town) && town.id === id && COLLECTIONS.every(key => Array.isArray(town[key])), 'invalid_argument', '持久化小镇数据无效');
       check(town.members.filter(member => member.roleId === 'mayor').length === 1 && town.members.some(member => member.playerId === town.ownerId && member.roleId === 'mayor'), 'invalid_argument', '持久化镇长数据无效');
-    }
-    if (state.version === 1) {
-      for (const town of Object.values(state.towns)) {
-        // 旧功能原样留档；组内留言不自动公开给全镇。
-        const migratableTicket = ticket => town.projects.some(project => project.id === ticket.projectId && project.worldId === ticket.worldId && project.dimension === ticket.dimension && ['completed', 'maintenance'].includes(project.status)) && ['open', 'working', 'resolved'].includes(ticket.status);
-        town.legacy = { projects: clone(town.projects), privateMessages: town.messages.filter(message => message.visibility === 'project'), tickets: town.tickets.filter(ticket => !migratableTicket(ticket)) };
-        for (const key of ['tasks', 'materials', 'pledges', 'facilities']) { town.legacy[key] = town[key] ?? []; delete town[key]; }
-        town.messages = town.messages.filter(message => message.visibility !== 'project').map(({ visibility, ...message }) => message);
-        town.tickets = town.tickets.filter(migratableTicket);
-        for (const project of town.projects) {
-          delete project.memberIds; delete project.expectedAt;
-          delete project.reviewReason; delete project.reviewedBy; delete project.reviewedAt;
-          project.status = ['pending', 'rejected'].includes(project.status) ? 'planned' : project.status === 'review' ? 'active' : project.status;
-          if (project.status === 'completed' && town.tickets.some(ticket => ticket.projectId === project.id && ticket.status !== 'resolved')) project.status = 'maintenance';
-          if (project.status === 'maintenance' && !town.tickets.some(ticket => ticket.projectId === project.id && ticket.status !== 'resolved')) project.status = 'completed';
-        }
-        for (const role of town.roles) role.permissions = role.permissions.filter(permission => Object.hasOwn(PERMISSIONS, permission));
-      }
-      state.version = 2;
     }
     return state;
   }
@@ -219,7 +197,7 @@ export class TownService {
           { id: 'mayor', name: '镇长', permissions: Object.keys(PERMISSIONS) },
         ],
         members: [{ playerId: player.id, name: player.name, roleId: 'mayor', joinedAt: timestamp }],
-        worlds: [initialWorld], projects: [], messages: [], tickets: [],
+        worlds: [initialWorld], projects: [], tickets: [],
       };
       return done({ townId: id });
     }
@@ -264,7 +242,6 @@ export class TownService {
       check(DIMENSION.test(dimension), 'invalid_argument', '维度必须使用命名空间格式');
       return { dimension, x: integer(values.x, 'X 坐标', -30000000, 30000000), y: integer(values.y, 'Y 坐标', -2048, 2048), z: integer(values.z, 'Z 坐标', -30000000, 30000000) };
     };
-    const radius = value => integer(value ?? config.defaultProximityRadius, '显示距离', 1, config.maximumProximityRadius);
     const projectFields = (values, previous) => {
       const merged = { ...previous, ...values };
       check(object(merged.chunks), 'invalid_argument', '必须框选区块矩形');
@@ -274,23 +251,32 @@ export class TownService {
       check((chunks.maxX - chunks.minX + 1) * (chunks.maxZ - chunks.minZ + 1) <= config.maximumRegionChunks, 'invalid_argument', '框选范围过大');
       const dimension = text(merged.dimension, '维度', 128);
       check(DIMENSION.test(dimension), 'invalid_argument', '维度必须使用命名空间格式');
-      const leaderId = merged.leaderId ?? player.id;
+      check(previous || !('leaderId' in values), 'invalid_argument', '新工程负责人自动使用当前登录玩家');
+      const leaderId = previous ? merged.leaderId : player.id;
+      if (previous && leaderId !== previous.leaderId) requirePermission('project.approve');
       member(leaderId);
       check(!('memberIds' in values) && !('expectedAt' in values), 'invalid_argument', '项目组和预计完工时间已移除');
-      const status = previous?.status ?? choice(values.status ?? 'planned', ['planned', 'active'], '工程状态');
+      const status = previous?.status ?? choice(values.status ?? 'planned', ['planned', 'active', 'completed'], '工程状态');
+      const name = text(merged.name ?? '', '工程名称', 100, status === 'planned');
+      check(status === 'planned' || name !== '预留地块', 'invalid_argument', '请填写具体工程名称');
       return {
-        name: text(merged.name ?? '', '工程名称', 100, status === 'planned') || '预留地块',
+        name: name || '预留地块',
         type: choice(merged.type ?? 'other', ['building', 'machine', 'other'], '工程类型'),
-        purpose: text(merged.purpose, '建筑用途', 2000, true), notes: text(merged.notes, '备注', 2000, true),
+        purpose: text(merged.purpose, '简介', 2000, true),
         leaderId, dimension, chunks, status,
       };
+    };
+
+    const checkRegion = (fields, worldId, previous) => {
+      if (previous && fields.dimension === previous.dimension && ['minX', 'maxX', 'minZ', 'maxZ'].every(key => fields.chunks[key] === previous.chunks[key])) return;
+      check(!town.projects.some(other => other.id !== previous?.id && other.worldId === worldId && other.dimension === fields.dimension && fields.chunks.minX <= other.chunks.maxX && fields.chunks.maxX >= other.chunks.minX && fields.chunks.minZ <= other.chunks.maxZ && fields.chunks.maxZ >= other.chunks.minZ), 'conflict', '所选区块与现有工程重叠，请重新框选');
     };
 
     if (action === 'town.snapshot') {
       if (payload.worldId) find('worlds', payload.worldId);
       const result = { town: publicTown(town), currentMember, roles: town.roles, members: town.members, worlds: town.worlds, permissions, permissionCatalog: Object.entries(PERMISSIONS).map(([id, name]) => ({ id, name })) };
-      result.limits = { defaultProximityRadius: config.defaultProximityRadius, maximumProximityRadius: config.maximumProximityRadius, maximumRegionChunks: config.maximumRegionChunks };
-      for (const key of ['projects', 'messages', 'tickets']) result[key] = town[key].filter(item => !payload.worldId || item.worldId === payload.worldId);
+      result.limits = { maximumRegionChunks: config.maximumRegionChunks };
+      for (const key of ['projects', 'tickets']) result[key] = town[key].filter(item => !payload.worldId || item.worldId === payload.worldId);
       result.projects = result.projects.map(project => ({ ...project, overlapIds: result.projects.filter(other => other.id !== project.id && other.worldId === project.worldId && other.dimension === project.dimension && project.chunks.minX <= other.chunks.maxX && project.chunks.maxX >= other.chunks.minX && project.chunks.minZ <= other.chunks.maxZ && project.chunks.maxZ >= other.chunks.minZ).map(other => other.id) }));
       return done(result, false);
     }
@@ -366,37 +352,23 @@ export class TownService {
     if (action === 'project.create') {
       requirePermission('project.create'); writableWorld(payload.worldId);
       const project = { ...base(payload.worldId), ...projectFields(payload) };
+      checkRegion(project, project.worldId);
       town.projects.push(project); return done(project);
     }
     if (action === 'project.update') {
       const project = projectWritable(payload.id); manageProject(project);
       check(!('status' in payload), 'invalid_argument', '请使用工程状态操作');
-      Object.assign(project, projectFields(payload, project), { updatedAt: timestamp });
+      const fields = projectFields(payload, project);
+      checkRegion(fields, project.worldId, project);
+      Object.assign(project, fields, { updatedAt: timestamp });
       return done(project);
     }
     if (action === 'project.status') {
       const project = projectWritable(payload.id); manageProject(project);
       const status = choice(payload.status, ['active', 'completed'], '工程状态');
       check(project.status === 'planned' && status === 'active' || project.status === 'active' && status === 'completed', 'conflict', '当前工程状态不能这样变更');
-      check(status !== 'active' || project.name !== '预留地块', 'invalid_argument', '请先填写具体工程名称再开工');
+      check(status !== 'active' || project.name.trim().length > 0 && project.name !== '预留地块', 'invalid_argument', '请先填写具体工程名称再开工');
       Object.assign(project, { status, updatedAt: timestamp }); return done(project);
-    }
-    if (action === 'message.create') {
-      requirePermission('message.create'); writableWorld(payload.worldId);
-      check(!payload.visibility || payload.visibility === 'town', 'invalid_argument', '留言仅支持全镇可见');
-      let projectId = null;
-      if (payload.projectId) {
-        const project = find('projects', payload.projectId);
-        check(project.worldId === payload.worldId, 'invalid_argument', '留言与工程必须属于同一周目');
-        projectId = project.id;
-      }
-      const message = { ...base(payload.worldId), ...position(payload), projectId, text: text(payload.text, '留言', 1000), radius: radius(payload.radius) };
-      town.messages.push(message); return done(message);
-    }
-    if (action === 'message.delete') {
-      requirePermission('message.create'); const message = writable(find('messages'));
-      check(message.createdBy === player.id || has('project.approve'), 'forbidden', '只能删除自己的留言');
-      town.messages = town.messages.filter(item => item.id !== message.id); return done({});
     }
     if (action === 'ticket.create') {
       requirePermission('ticket.create');

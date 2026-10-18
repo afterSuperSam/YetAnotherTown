@@ -1,14 +1,15 @@
 {
   "schemaVersion": 1,
-  "id": "yetanothertown",
-  "version": "1.0.0-alpha.5",
-  "name": "YetAnotherTown",
-  "description": "小镇工程登记、空间留言与维护报修平台",
+  "id": "ohmytown",
+  "version": "1.0.0-alpha.6",
+  "name": "Oh My Town",
+  "description": "Xaero 原生地图项目登记、区域介绍与维护报修",
+  "mixins": ["ohmytown.mixins.json"],
   "authors": ["Sam"],
   "environment": "client",
   "entrypoints": {
-    "client": ["dev.yetanothertown.Bootstrap"],
-    "modmenu": ["dev.yetanothertown.ModMenuIntegration"]
+    "client": ["dev.ohmytown.Bootstrap"],
+    "modmenu": ["dev.ohmytown.ModMenuIntegration"]
   },
   "suggests": {"modmenu": "*"},
   "depends": {

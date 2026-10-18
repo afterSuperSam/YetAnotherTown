@@ -1,9 +1,19 @@
 import java.io.IOException;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.ClassModel;
+import java.lang.classfile.Annotation;
+import java.lang.classfile.AnnotationValue;
+import java.lang.classfile.AttributedElement;
+import java.lang.classfile.Instruction;
+import java.lang.classfile.Opcode;
+import java.lang.classfile.attribute.RuntimeInvisibleAnnotationsAttribute;
+import java.lang.classfile.attribute.RuntimeVisibleAnnotationsAttribute;
 import java.lang.classfile.constantpool.ClassEntry;
 import java.lang.classfile.constantpool.FieldRefEntry;
 import java.lang.classfile.constantpool.MemberRefEntry;
+import java.lang.classfile.constantpool.Utf8Entry;
+import java.lang.classfile.instruction.FieldInstruction;
+import java.lang.classfile.instruction.InvokeInstruction;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -43,11 +53,14 @@ public final class VerifyLinks {
         int checked = 0;
         while (entries.hasMoreElements()) {
             String name = entries.nextElement().getName();
-            if (!name.endsWith(".class") || !(name.startsWith(prefix + "/") || name.equals("dev/yetanothertown/Bootstrap.class") || name.equals("dev/yetanothertown/ModMenuIntegration.class"))) continue;
+            if (!name.endsWith(".class") || !(name.startsWith(prefix + "/") || name.startsWith("dev/ohmytown/mixin/") || name.equals("dev/ohmytown/Bootstrap.class") || name.equals("dev/ohmytown/ModMenuIntegration.class"))) continue;
             ClassModel model = load(name.substring(0, name.length() - 6));
             checked++;
             if (model.majorVersion() > 69) failures.add(name + ": requires Java newer than 25");
             for (var entry : model.constantPool()) {
+                if ((name.startsWith(prefix + "/XaeroBridge") || name.startsWith(prefix + "/ProjectHighlighter"))
+                        && entry instanceof Utf8Entry text && Set.of("cameraX", "cameraZ", "scale", "drawArea").contains(text.stringValue()))
+                    failures.add(name + ": independent map projection must not replace native chunk highlighting: " + text.stringValue());
                 if (entry instanceof ClassEntry type && scoped(type.asInternalName())) {
                     references++;
                     if (load(type.asInternalName()) == null) failures.add(name + ": missing class " + type.asInternalName());
@@ -62,11 +75,7 @@ public final class VerifyLinks {
             }
         }
         if (checked == 0) failures.add("No adapter classes found for " + prefix);
-        for (String field : List.of("cameraX", "cameraZ", "scale")) {
-            ClassModel map = load("xaero/map/gui/GuiMap");
-            if (map == null || map.fields().stream().noneMatch(value -> value.fieldName().equalsString(field) && value.fieldType().equalsString("D")))
-                failures.add("Xaero reflection contract changed: GuiMap." + field + " must be a declared double field");
-        }
+        verifyNativeMap(prefix, failures);
         boolean legacyScreen = resolves("net/minecraft/client/Minecraft", "setScreen", "(Lnet/minecraft/client/gui/screens/Screen;)V", false, new HashSet<>())
                 && fieldType("net/minecraft/client/Minecraft", "screen") != null;
         String gui = fieldType("net/minecraft/client/Minecraft", "gui");
@@ -84,6 +93,97 @@ public final class VerifyLinks {
         System.out.println(prefix + ": " + checked + " classes, " + references + " references verified against real dependency bytecode; game not initialized");
     }
 
+    /** 检查原生注入目标、区块单位和实际注册路径，防止退回仅自建窗口可用的覆盖层。 */
+    private void verifyNativeMap(String prefix, List<String> failures) throws IOException {
+        ClassModel map = load("xaero/map/gui/GuiMap");
+        for (var field : Map.of("mapTileSelection", "Lxaero/map/gui/MapTileSelection;", "rightClickDim", "Lnet/minecraft/resources/ResourceKey;").entrySet()) {
+            if (map == null || map.fields().stream().noneMatch(value -> value.fieldName().equalsString(field.getKey()) && value.fieldType().equalsString(field.getValue())))
+                failures.add("Xaero reflection contract changed: GuiMap." + field.getKey() + field.getValue());
+        }
+        for (String[] method : List.of(
+                new String[]{"xaero/map/highlight/HighlighterRegistry", "end", "()V"},
+                new String[]{"xaero/map/gui/GuiMap", "getRightClickOptions", "()Ljava/util/ArrayList;"},
+                new String[]{prefix + "/XaeroBridge", "registerHighlighter", "(Ljava/lang/Object;)V"},
+                new String[]{prefix + "/XaeroBridge", "playerMapKey", "(Ljava/lang/String;)Ljava/lang/String;"},
+                new String[]{prefix + "/XaeroBridge", "addMapOptions", "(Ljava/lang/Object;Ljava/lang/Object;)V"}))
+            if (!resolves(method[0], method[1], method[2], false, new HashSet<>())) failures.add("Native map hook target missing: " + String.join(" ", method));
+
+        ClassModel highlighter = load(prefix + "/ProjectHighlighter");
+        if (highlighter == null || highlighter.superclass().isEmpty() || !highlighter.superclass().get().asInternalName().equals("xaero/map/highlight/ChunkHighlighter"))
+            failures.add("Project overlay must use the native ChunkHighlighter texture pipeline");
+        if (!calls(load(prefix + "/XaeroBridge"), "registerHighlighter", "xaero/map/highlight/HighlighterRegistry", "register"))
+            failures.add("Project highlighter is not registered with the native registry");
+        if (!calls(load(prefix + "/XaeroBridge"), "playerMapKey", "xaero/map/world/MapConnectionNode", "getDimId")
+                || !calls(load(prefix + "/XaeroBridge"), "playerMapKey", "xaero/map/MapProcessor", "getWorld")
+                || !calls(load(prefix + "/XaeroBridge"), "playerMapKey", "xaero/map/MapProcessor", "getNewWorld"))
+            failures.add("Automatic map binding must validate the actual player dimension and the settled native world");
+        if (!calls(map, "extractRenderState", "xaero/map/highlight/DimensionHighlighterHandler", "getBlockHighlightBluntTooltip")
+                || !calls(map, "extractRenderState", "xaero/lib/client/gui/widget/Tooltip", "drawBox"))
+            failures.add("Native map hover must render the full project tooltip through Xaero's tooltip box");
+        verifyMixin("HighlighterRegistryMixin", "xaero/map/highlight/HighlighterRegistry", "end()V", "HEAD", "registerHighlighter", failures);
+        verifyMixin("MapMenuMixin", "xaero/map/gui/GuiMap", "getRightClickOptions()Ljava/util/ArrayList;", "RETURN", "addMapOptions", failures);
+        String metadata = resource("fabric.mod.json");
+        String mixins = resource("ohmytown.mixins.json");
+        if (!metadata.contains("\"ohmytown.mixins.json\"") || !mixins.contains("\"HighlighterRegistryMixin\"") || !mixins.contains("\"MapMenuMixin\"")
+                || !mixins.contains("\"dev.ohmytown.mixin\"") || !mixins.matches("(?s).*\"required\"\\s*:\\s*true.*"))
+            failures.add("Required native map mixins are not declared in the packaged Fabric metadata");
+
+        boolean chunkSelection = false;
+        if (map != null) for (var method : map.methods()) if (method.methodName().equalsString("mouseClicked") && method.code().isPresent()) {
+            List<Instruction> instructions = method.code().get().elementList().stream().filter(Instruction.class::isInstance).map(Instruction.class::cast).toList();
+            for (int index = 7; index < instructions.size(); index++) {
+                if (!(instructions.get(index) instanceof InvokeInstruction invoke) || !invoke.owner().asInternalName().equals("xaero/map/gui/MapTileSelection") || !invoke.name().equalsString("<init>") || !invoke.type().equalsString("(II)V")) continue;
+                chunkSelection = instructions.get(index - 7) instanceof FieldInstruction x && x.name().equalsString("rightClickX")
+                        && instructions.get(index - 6).opcode() == Opcode.ICONST_4 && instructions.get(index - 5).opcode() == Opcode.ISHR
+                        && instructions.get(index - 3) instanceof FieldInstruction z && z.name().equalsString("rightClickZ")
+                        && instructions.get(index - 2).opcode() == Opcode.ICONST_4 && instructions.get(index - 1).opcode() == Opcode.ISHR;
+            }
+        }
+        if (!chunkSelection) failures.add("Native right-drag selection no longer converts block coordinates with signed >> 4; inspect units before adapting");
+    }
+
+    private void verifyMixin(String name, String target, String method, String location, String hook, List<String> failures) throws IOException {
+        ClassModel model = load("dev/ohmytown/mixin/" + name);
+        boolean targetsNative = model != null && annotationStrings(model, "Lorg/spongepowered/asm/mixin/Mixin;").contains(target.replace('/', '.'));
+        boolean injects = false;
+        if (model != null) for (var member : model.methods()) {
+            Set<String> values = annotationStrings(member, "Lorg/spongepowered/asm/mixin/injection/Inject;");
+            if (values.contains(method) && values.contains(location) && calls(model, member.methodName().stringValue(), "dev/ohmytown/Bootstrap", "mapHook")) injects = true;
+        }
+        boolean dispatches = false;
+        if (model != null) for (var entry : model.constantPool()) if (entry instanceof Utf8Entry text && text.equalsString(hook)) dispatches = true;
+        if (!targetsNative || !injects || !dispatches) failures.add(name + " must inject " + target + "." + method + " at " + location + " and dispatch " + hook);
+    }
+
+    private static Set<String> annotationStrings(AttributedElement element, String annotationType) {
+        Set<String> result = new HashSet<>();
+        for (var attribute : element.attributes()) {
+            List<Annotation> annotations = attribute instanceof RuntimeVisibleAnnotationsAttribute visible ? visible.annotations()
+                    : attribute instanceof RuntimeInvisibleAnnotationsAttribute invisible ? invisible.annotations() : List.of();
+            for (Annotation annotation : annotations) if (annotation.className().equalsString(annotationType))
+                for (var value : annotation.elements()) collectAnnotationStrings(value.value(), result);
+        }
+        return result;
+    }
+
+    private static void collectAnnotationStrings(AnnotationValue value, Set<String> result) {
+        if (value instanceof AnnotationValue.OfString text) result.add(text.stringValue());
+        else if (value instanceof AnnotationValue.OfArray array) for (AnnotationValue child : array.values()) collectAnnotationStrings(child, result);
+        else if (value instanceof AnnotationValue.OfAnnotation annotation) for (var child : annotation.annotation().elements()) collectAnnotationStrings(child.value(), result);
+    }
+
+    private static boolean calls(ClassModel model, String method, String owner, String target) {
+        if (model != null) for (var member : model.methods()) if (member.methodName().equalsString(method) && member.code().isPresent())
+            for (var element : member.code().get()) if (element instanceof InvokeInstruction invoke && invoke.owner().asInternalName().equals(owner) && invoke.name().equalsString(target)) return true;
+        return false;
+    }
+
+    private String resource(String name) throws IOException {
+        var entry = archives.getFirst().getEntry(name);
+        if (entry == null) return "";
+        try (var input = archives.getFirst().getInputStream(entry)) { return new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8); }
+    }
+
     private String fieldType(String owner, String name) throws IOException {
         ClassModel model = load(owner);
         if (model == null) return null;
@@ -96,7 +196,7 @@ public final class VerifyLinks {
 
     private boolean scoped(String name) {
         return name.startsWith("net/minecraft/") || name.startsWith("net/fabricmc/")
-                || name.startsWith("xaero/") || name.startsWith("com/mojang/") || name.startsWith("com/terraformersmc/modmenu/") || name.startsWith("dev/yetanothertown/");
+                || name.startsWith("xaero/") || name.startsWith("com/mojang/") || name.startsWith("com/terraformersmc/modmenu/") || name.startsWith("dev/ohmytown/");
     }
 
     private ClassModel load(String name) throws IOException {

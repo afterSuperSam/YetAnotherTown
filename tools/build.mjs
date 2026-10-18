@@ -72,7 +72,7 @@ for (const version of versions) {
   await mkdir(generated, { recursive: true });
   const generatedFiles = [];
   for (const source of sourceFiles) {
-    const text = (await readFile(source, 'utf8')).replaceAll('dev.yetanothertown.client', `dev.yetanothertown.${variant}`);
+    const text = (await readFile(source, 'utf8')).replaceAll('dev.ohmytown.client', `dev.ohmytown.${variant}`);
     const destination = path.join(generated, path.basename(source));
     await writeFile(destination, text);
     generatedFiles.push(destination);
@@ -80,7 +80,7 @@ for (const version of versions) {
   const mods = Object.values(descriptor.mods).map(value => value.jar);
   const nested = [];
   for (const mod of mods) nested.push(...await nestedJars(mod));
-  const classpath = [descriptor.client, dependencies.loader, ...descriptor.classpath, ...mods, ...nested];
+  const classpath = [descriptor.client, dependencies.loader, dependencies.mixinCompile, ...descriptor.classpath, ...mods, ...nested];
   classpaths[version] = classpath;
   await writeFile(path.join(build, `classpath-${version}.txt`), classpath.join('\n') + '\n');
   const responseFile = path.join(build, `javac-${version}.args`);
@@ -94,14 +94,14 @@ await run(javac, ['--release', '25', '-encoding', 'UTF-8', '-proc:none', '-cp', 
 await cp(path.join(root, 'client', 'src', 'main', 'resources'), classes, { recursive: true });
 const metadata = JSON.parse(await readFile(path.join(classes, 'fabric.mod.json'), 'utf8'));
 const artifactVersion = metadata.version.replace(/-alpha\.(\d+)$/, 'alpha$1');
-const artifact = path.join(build, 'libs', `yetanothertown-${artifactVersion}.jar`);
+const artifact = path.join(build, 'libs', `ohmytown-${artifactVersion}.jar`);
 await mkdir(path.dirname(artifact), { recursive: true });
 await run(jar, ['--create', '--file', artifact, '--date=2026-10-18T00:00:00Z', '-C', classes, '.']);
 const verifier = path.join(build, 'verifier');
 await mkdir(verifier, { recursive: true });
 await run(javac, ['--release', '25', '-encoding', 'UTF-8', '-d', verifier, path.join(root, 'tools', 'VerifyLinks.java')]);
 for (const version of versions) {
-  console.log(await run(java, ['-cp', verifier, 'VerifyLinks', artifact, 'dev.yetanothertown.v' + version.replaceAll('.', ''), path.join(build, `classpath-${version}.txt`)]));
+  console.log(await run(java, ['-cp', verifier, 'VerifyLinks', artifact, 'dev.ohmytown.v' + version.replaceAll('.', ''), path.join(build, `classpath-${version}.txt`)]));
 }
 if (mode === 'compatibility') {
   for (const version of versions) {
@@ -112,13 +112,13 @@ if (mode === 'compatibility') {
       const mods = [api, world, minimap, descriptor.mods.modmenu];
       const nested = [];
       for (const mod of mods) nested.push(...await nestedJars(mod.jar));
-      const classpath = [descriptor.client, loader.jar, ...descriptor.classpath, ...mods.map(mod => mod.jar), ...nested];
+      const classpath = [descriptor.client, loader.jar, dependencies.mixinCompile, ...descriptor.classpath, ...mods.map(mod => mod.jar), ...nested];
       const name = `${version}-loader${loader.version}-api${api.version.split('+')[0]}-world${world.version.split('-').at(-1)}-mini${minimap.version.split('-').at(-1)}`;
       const file = path.join(build, `compatibility-${name}.txt`);
       await writeFile(file, classpath.join('\n') + '\n');
       matrices.push(file);
     }
-    await run(java, ['-Xmx768m', '-cp', verifier, 'VerifyLinks', artifact, 'dev.yetanothertown.v' + version.replaceAll('.', ''), ...matrices]);
+    await run(java, ['-Xmx768m', '-cp', verifier, 'VerifyLinks', artifact, 'dev.ohmytown.v' + version.replaceAll('.', ''), ...matrices]);
     console.log(`${version}: ${matrices.length} dependency combinations verified (bytecode and reflection; no game launched)`);
   }
 }
@@ -130,17 +130,17 @@ if (mode === 'test' || mode === 'client-test' || mode === 'compatibility') {
   const gateway = sourceFiles.find(file => file.endsWith('TownGateway.java'));
   const classpath = [classes, ...classpaths[versions[0]]].join(path.delimiter);
   await run(javac, ['--release', '25', '--add-modules', 'jdk.httpserver', '-encoding', 'UTF-8', '-proc:none', '-cp', classpath, '-d', testClasses, gateway, ...tests.filter(source => source.endsWith('TownGatewayTest.java'))]);
-  console.log(await run(java, ['--add-modules', 'jdk.httpserver', '-ea', '-cp', testClasses + path.delimiter + classpath, 'dev.yetanothertown.client.TownGatewayTest']));
+  console.log(await run(java, ['--add-modules', 'jdk.httpserver', '-ea', '-cp', testClasses + path.delimiter + classpath, 'dev.ohmytown.client.TownGatewayTest']));
   const keyboardTest = tests.find(source => source.endsWith('TownInputTest.java'));
   for (const version of versions) {
     const variant = 'v' + version.replaceAll('.', '');
     const directory = path.join(build, 'generated-tests', variant);
     await mkdir(directory, { recursive: true });
     const source = path.join(directory, 'TownInputTest.java');
-    await writeFile(source, (await readFile(keyboardTest, 'utf8')).replaceAll('dev.yetanothertown.client', `dev.yetanothertown.${variant}`));
+    await writeFile(source, (await readFile(keyboardTest, 'utf8')).replaceAll('dev.ohmytown.client', `dev.ohmytown.${variant}`));
     const versionClasspath = [classes, ...classpaths[version]].join(path.delimiter);
     await run(javac, ['--release', '25', '-encoding', 'UTF-8', '-proc:none', '-cp', versionClasspath, '-d', testClasses, source]);
-    console.log(version + ': ' + await run(java, ['-ea', '-cp', testClasses + path.delimiter + versionClasspath, `dev.yetanothertown.${variant}.TownInputTest`]));
+    console.log(version + ': ' + await run(java, ['-ea', '-cp', testClasses + path.delimiter + versionClasspath, `dev.ohmytown.${variant}.TownInputTest`]));
   }
 }
 console.log(`Single JAR: ${path.relative(root, artifact)} (${versions.join(', ')})`);

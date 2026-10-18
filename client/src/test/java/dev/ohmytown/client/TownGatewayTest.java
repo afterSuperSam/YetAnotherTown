@@ -1,4 +1,4 @@
-package dev.yetanothertown.client;
+package dev.ohmytown.client;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -21,17 +21,9 @@ public final class TownGatewayTest {
     }
     public static void main(String[] arguments) throws Exception {
         TownGateway gateway = TownGateway.INSTANCE;
-        var directory = Files.createTempDirectory("yat-gateway-test-");
+        var directory = Files.createTempDirectory("omt-gateway-test-");
         gateway.initialize(directory);
-        require(Files.exists(directory.resolve("yetanothertown.json")), "default configuration saved");
-        Files.writeString(directory.resolve("yetanothertown.json"), "{\"openKey\":75,\"nearbyKey\":72,\"nearbyRadius\":48}");
-        gateway.initialize(directory);
-        require(gateway.needsKeyMigration(), "legacy numeric settings request a one-time native key migration");
-        gateway.finishKeyMigration();
-        gateway.initialize(directory);
-        require(!gateway.needsKeyMigration(), "native key migration marker survives reload");
-        String migratedConfiguration = Files.readString(directory.resolve("yetanothertown.json"));
-        require(!migratedConfiguration.contains("openKey") && !migratedConfiguration.contains("nearbyKey"), "numeric bindings no longer override native options");
+        require(Files.exists(directory.resolve("ohmytown.json")), "default configuration saved");
         for (String invalid : new String[]{"http://example.com", "ftp://localhost", "https://example.com/api", "http://", "https://name:secret@example.com", "https://example.com:0", "https://example.com:65536"}) {
             boolean rejected = false;
             try { gateway.configure(invalid); } catch (IllegalArgumentException exception) { rejected = true; }
@@ -144,14 +136,39 @@ public final class TownGatewayTest {
             require(gateway.towns.size() == 1, "array envelope populates town list");
             require("Bearer test-token".equals(authorization.get()), "subsequent requests use session token");
             TownGateway.Context connectedContext = gateway.context();
-            gateway.configure(endpoint, 64, 5, false);
+            gateway.configure(endpoint, 4, 8, 5, false, false);
             require(gateway.isCurrent(connectedContext), "visual settings preserve operation context");
             require(gateway.loggedIn(), "visual and polling settings do not log out the player");
-            require(gateway.config().nearbyRadius == 64 && gateway.config().pollIntervalSeconds == 5 && !gateway.config().animationEnabled, "configuration screen settings are applied");
-            require(Files.readString(directory.resolve("yetanothertown.json")).contains("personal-server|first"), "saving settings retains personal map bindings");
+            require(gateway.config().entrySubtitleSeconds == 4 && gateway.config().entryCooldownSeconds == 8 && gateway.config().pollIntervalSeconds == 5 && !gateway.config().animationEnabled && !gateway.config().projectOverlayEnabled, "configuration screen settings are applied");
+            require(Files.readString(directory.resolve("ohmytown.json")).contains("personal-server|first"), "saving settings retains personal map bindings");
             boolean rejectedSettings = false;
-            try { gateway.configure(endpoint, 0, 5, false); } catch (IllegalArgumentException exception) { rejectedSettings = true; }
-            require(rejectedSettings && gateway.config().nearbyRadius == 64, "invalid settings cannot partially overwrite configuration");
+            try { gateway.configure(endpoint, 11, 8, 5, false, true); } catch (IllegalArgumentException exception) { rejectedSettings = true; }
+            require(rejectedSettings && gateway.config().entrySubtitleSeconds == 4 && !gateway.config().projectOverlayEnabled, "invalid settings cannot partially overwrite configuration");
+            gateway.setProjectOverlayEnabled(true);
+            require(gateway.config().projectOverlayEnabled && gateway.isCurrent(connectedContext), "map overlay toggle preserves active session and context");
+            gateway.configure(endpoint, 0, 8, 5, false, true);
+            require(gateway.config().entrySubtitleSeconds == 0, "entry subtitles can be disabled independently of project details");
+            var savedSnapshot = gateway.snapshot;
+            String savedTown = gateway.townId, savedWorld = gateway.worldId;
+            gateway.townId = "00000001";
+            gateway.worldId = "c".repeat(24);
+            var worlds = new com.google.gson.JsonArray();
+            var currentWorld = TownGateway.object("id", gateway.worldId, "archived", false, "serverAddress", "town.example");
+            worlds.add(currentWorld);
+            gateway.snapshot = TownGateway.object("worlds", worlds);
+            require(!gateway.autoBindMap("different.example", "minecraft:overworld", "personal-server|third"), "automatic binding must match the current server");
+            require(!gateway.autoBindMap("town.example", "minecraft:overworld", "personal-server|first"), "automatic binding cannot reuse historical terrain");
+            require(gateway.autoBindMap("TOWN.EXAMPLE", "minecraft:overworld", "personal-server|third"), "a unique active world binds automatically without a management detour");
+            require(!gateway.autoBindMap("town.example", "minecraft:overworld", "personal-server|replacement") && gateway.getBoundMapKey("minecraft:overworld").equals("personal-server|third"), "automatic binding never overwrites an existing map");
+            worlds.add(TownGateway.object("id", "d".repeat(24), "archived", false, "serverAddress", "town.example"));
+            require(!gateway.autoBindMap("town.example", "minecraft:the_nether", "personal-server|third"), "ambiguous active worlds require explicit binding");
+            worlds.remove(1);
+            currentWorld.addProperty("archived", true);
+            require(!gateway.autoBindMap("town.example", "minecraft:the_nether", "personal-server|third"), "archived worlds cannot bind automatically");
+            currentWorld.addProperty("archived", false);
+            gateway.worldId = "d".repeat(24);
+            require(!gateway.autoBindMap("town.example", "minecraft:the_nether", "personal-server|third"), "the automatically matched world must be the selected world");
+            gateway.townId = savedTown; gateway.worldId = savedWorld; gateway.snapshot = savedSnapshot;
             gateway.request("denied", TownGateway.object()).handle((value, error) -> null).join();
             require(gateway.status.equals("没有操作权限"), "service errors remain Chinese");
             gateway.request("malformed", TownGateway.object()).handle((value, error) -> null).join();
@@ -194,7 +211,7 @@ public final class TownGatewayTest {
             loginRelease.countDown();
             login.handle((value, error) -> null).get(5, TimeUnit.SECONDS);
             require(!gateway.loggedIn(), "logout cancels a pending login");
-            require(!Files.readString(directory.resolve("yetanothertown.json")).contains("test-token"), "session token never persisted");
+            require(!Files.readString(directory.resolve("ohmytown.json")).contains("test-token"), "session token never persisted");
         } finally {
             slowRelease.countDown();
             refreshRelease.countDown();

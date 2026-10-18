@@ -1,4 +1,4 @@
-package dev.yetanothertown.client;
+package dev.ohmytown.client;
 
 import com.google.gson.JsonObject;
 import com.mojang.blaze3d.platform.InputConstants;
@@ -6,6 +6,7 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.components.MultiLineEditBox;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
@@ -21,11 +22,12 @@ import java.util.function.Consumer;
 
 /** 通用表单负责输入、选择、滚动与明确提交。 */
 final class TownForm extends Screen {
-    record Field(String key, String label, String initial, String[] values, String[] labels, boolean number, boolean paired) {
-        static Field text(String key, String label, String value) { return new Field(key, label, value, null, null, false, false); }
-        static Field number(String key, String label, int value) { return new Field(key, label, Integer.toString(value), null, null, true, true); }
-        static Field choice(String key, String label, String value, String[] values, String[] labels) { return new Field(key, label, value, values, labels, false, true); }
-        Field compact() { return new Field(key, label, initial, values, labels, number, true); }
+    record Field(String key, String label, String initial, String[] values, String[] labels, boolean number, boolean paired, boolean multiline) {
+        static Field text(String key, String label, String value) { return new Field(key, label, value, null, null, false, false, false); }
+        static Field multiline(String key, String label, String value) { return new Field(key, label, value, null, null, false, true, true); }
+        static Field number(String key, String label, int value) { return new Field(key, label, Integer.toString(value), null, null, true, true, false); }
+        static Field choice(String key, String label, String value, String[] values, String[] labels) { return new Field(key, label, value, values, labels, false, true, false); }
+        Field compact() { return new Field(key, label, initial, values, labels, number, true, multiline); }
         static Field toggle(String key, String label, boolean value) { return choice(key, label, Boolean.toString(value), new String[]{"false", "true"}, new String[]{"关闭", "开启"}); }
     }
     record Action(String label, Runnable run) { }
@@ -110,7 +112,7 @@ final class TownForm extends Screen {
             addField(field, contentLeft, y, fieldWidth);
             if (pair) addField(fields.get(index + 1), contentLeft + fieldWidth + 8, y, contentWidth - fieldWidth - 8);
             index += pair ? 2 : 1;
-            y += 40;
+            y += field.multiline() || pair && fields.get(index - 1).multiline() ? multilineHeight() + 20 : 40;
         }
         if (!fields.isEmpty() && !actions.isEmpty()) { separators.add(y - 3); y += 8; }
         for (int index = 0; index < actions.size();) {
@@ -144,10 +146,23 @@ final class TownForm extends Screen {
         }
     }
 
+    private int multilineHeight() { return Math.max(20, Math.min(52, bodyBottom - bodyTop - 24)); }
+
     private void addField(Field field, int x, int y, int width) {
         labels.add(new TextLine(font.plainSubstrByWidth(field.label(), width), x, y, TownStyle.TEXT));
         int inputY = y + 12;
-        if (field.values() == null) {
+        if (field.multiline()) {
+            MultiLineEditBox input;
+            if (fieldWidgets.get(field.key()) instanceof MultiLineEditBox existing) {
+                input = existing; input.setWidth(width); input.setHeight(multilineHeight()); input.setX(x); input.setY(inputY);
+            } else {
+                input = MultiLineEditBox.builder().setX(x).setY(inputY).setTextColor(TownStyle.TEXT).build(font, width, multilineHeight(), Component.literal(field.label()));
+                input.setCharacterLimit(2000); input.setValue(values.get(field.key()));
+                input.setValueListener(value -> values.put(field.key(), value));
+            }
+            input.active = !submitting;
+            fieldWidgets.put(field.key(), input); addContentWidget(input);
+        } else if (field.values() == null) {
             EditBox input;
             if (fieldWidgets.get(field.key()) instanceof EditBox existing) {
                 input = existing; input.setWidth(width); input.setX(x); input.setY(inputY);
@@ -284,6 +299,7 @@ final class TownForm extends Screen {
     }
     @Override public boolean mouseScrolled(double x, double y, double horizontal, double vertical) {
         if (x < left + 8 || x > window.right() - 8 || y < bodyTop || y > bodyBottom || vertical == 0) return super.mouseScrolled(x, y, horizontal, vertical);
+        for (AbstractWidget widget : contentWidgets) if (widget instanceof MultiLineEditBox && widget.active && widget.visible && widget.isMouseOver(x, y) && widget.mouseScrolled(x, y, horizontal, vertical)) return true;
         int amount = (int) Math.round(-vertical * 36);
         moveScroll(amount == 0 ? (vertical < 0 ? 1 : -1) : amount);
         return true;

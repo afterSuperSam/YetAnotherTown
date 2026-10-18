@@ -13,7 +13,7 @@ const position = { dimension: 'minecraft:overworld', x: -17, y: 64, z: 0 };
 const rejects = (operation, code) => assert.rejects(operation, error => error instanceof ApiError && error.code === code);
 
 async function fixture(t, config = {}) {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'yat-service-'));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'omt-service-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   let time = Date.parse('2026-10-18T00:00:00Z');
   const store = new JsonStore(path.join(directory, 'state.json'));
@@ -57,19 +57,19 @@ test('只读查询不复制无关小镇，返回资料仍与服务状态隔离',
 test('指定周目快照只报告同周目工程的区块重叠', async t => {
   const f = await fixture(t);
   const first = await f.project();
-  const second = await f.project({ name: '同周目重叠' });
+  const second = { ...structuredClone(first), id: 'historical-overlap' };
+  f.service.state.towns[f.townId].projects.push(second);
   const otherWorld = await f.call('world.create', { townId: f.townId, name: '新周目' });
   await f.project({ worldId: otherWorld.id, name: '其他周目重叠' });
   const snapshot = await f.call('town.snapshot', { townId: f.townId, worldId: f.worldId });
   assert.deepEqual(snapshot.projects.map(project => [project.id, project.overlapIds]), [[first.id, [second.id]], [second.id, [first.id]]]);
 });
 
-test('配置拒绝未知项、非法范围和相互冲突的提示距离', () => {
+test('配置拒绝未知项、旧配置和非法范围', () => {
   assert.equal(validateConfig().port, 37841);
-  const migrated = validateConfig({ challengeSeconds: 90, port: 37842 });
-  assert.equal(migrated.port, 37842);
-  assert.equal(Object.hasOwn(migrated, 'challengeSeconds'), false);
-  for (const config of [{ port: 0 }, { port: '37841' }, { bypassAuthentication: true }, { sessionHours: -1 }, { defaultProximityRadius: 300, maximumProximityRadius: 100 }, JSON.parse('{"toString":1}'), JSON.parse('{"__proto__":{}}')]) assert.throws(() => validateConfig(config), ApiError);
+  assert.equal(validateConfig().dataFile, './data/ohmytown.json');
+  for (const key of ['challengeSeconds', 'defaultProximityRadius', 'maximumProximityRadius']) assert.throws(() => validateConfig({ [key]: 10 }), ApiError);
+  for (const config of [{ port: 0 }, { port: '37841' }, { bypassAuthentication: true }, { sessionHours: -1 }, JSON.parse('{"toString":1}'), JSON.parse('{"__proto__":{}}')]) assert.throws(() => validateConfig(config), ApiError);
 });
 
 test('直接使用游戏 UUID 登录且无外部请求，会话到期要求重新登录', async t => {
@@ -120,7 +120,7 @@ test('八位小镇 ID、密码哈希、可关闭密码、多小镇及新人只�
   const snapshot = await f.call('town.snapshot', { townId: f.townId, worldId: '' }, bob.token);
   assert.equal(snapshot.currentMember.roleId, 'newcomer');
   assert.deepEqual(snapshot.permissions, []);
-  assert.deepEqual(snapshot.limits, { defaultProximityRadius: 32, maximumProximityRadius: 256, maximumRegionChunks: 65536 });
+  assert.deepEqual(snapshot.limits, { maximumRegionChunks: 65536 });
   assert.equal(snapshot.town.passwordEnabled, true);
   assert.equal('password' in snapshot.town, false);
   await rejects(f.call('project.create', { townId: f.townId, worldId: f.worldId }, bob.token), 'forbidden');
@@ -209,8 +209,8 @@ test('计划占区、开工、完工及区块重叠验证', async t => {
   await rejects(f.project({ expectedAt: '2026-11-01' }), 'invalid_argument');
   const first = await f.project({ name: '', purpose: '' });
   assert.equal(first.status, 'planned'); assert.equal(first.name, '预留地块');
-  const second = await f.project();
-  assert.deepEqual((await f.snapshot()).projects.find(item => item.id === first.id).overlapIds, [second.id]);
+  await rejects(f.project(), 'conflict');
+  const second = await f.project({ chunks: { minX: 1, maxX: 1, minZ: 1, maxZ: 2 } });
   await rejects(f.call('project.status', { townId: f.townId, id: first.id, status: 'active' }), 'invalid_argument');
   await f.call('project.update', { townId: f.townId, id: first.id, name: '车站' });
   await rejects(f.call('project.update', { townId: f.townId, id: first.id, status: 'completed' }), 'invalid_argument');
@@ -224,19 +224,21 @@ test('计划占区、开工、完工及区块重叠验证', async t => {
   for (const action of ['task.create', 'material.create', 'facility.create', 'project.review']) await rejects(f.call(action, { townId: f.townId }), 'not_found');
 });
 
-test('留言全镇可见，其他成员不可修改工程或删除他人留言', async t => {
+test('留言接口、数据和权限目录均已移除，普通成员不能修改他人工程', async t => {
   const f = await fixture(t); const bob = await f.join();
   const project = await f.project();
-  const message = await f.call('message.create', { townId: f.townId, worldId: f.worldId, projectId: project.id, ...position, text: '材料在二楼' });
-  assert.equal((await f.call('town.snapshot', { townId: f.townId }, bob.token)).messages.length, 1);
-  await rejects(f.call('message.create', { townId: f.townId, worldId: f.worldId, projectId: project.id, ...position, text: '私密内容', visibility: 'project' }), 'invalid_argument');
+  for (const action of ['message.create', 'message.delete']) await rejects(f.call(action, { townId: f.townId }), 'not_found');
+  const snapshot = await f.snapshot();
+  assert.equal(Object.hasOwn(snapshot, 'messages'), false);
+  assert.equal(snapshot.permissionCatalog.some(item => item.id.startsWith('message.')), false);
+  assert.equal(snapshot.roles.some(role => role.permissions.includes('message.create')), false);
   await rejects(f.call('project.update', { townId: f.townId, id: project.id, name: '越权' }, bob.token), 'forbidden');
-  await rejects(f.call('message.delete', { townId: f.townId, id: message.id }, bob.token), 'forbidden');
 });
 
 test('完工工程报修后待维护，全部工单解决才回到完工，负责人可维护', async t => {
   const f = await fixture(t); const bob = await f.join(); const carol = await f.join('Carol');
-  const project = await f.project({ leaderId: bob.player.id });
+  const project = await f.project();
+  await f.call('project.update', { townId: f.townId, id: project.id, leaderId: bob.player.id });
   const report = () => f.call('ticket.create', { townId: f.townId, worldId: f.worldId, projectId: project.id, ...position, title: '机器堵塞' }, carol.token);
   await rejects(report(), 'conflict');
   await f.call('project.status', { townId: f.townId, id: project.id, status: 'active' }, bob.token);
@@ -254,52 +256,23 @@ test('完工工程报修后待维护，全部工单解决才回到完工，负�
   assert.equal((await f.snapshot()).projects[0].status, 'maintenance');
 });
 
-test('周目隔离与归档保护覆盖工程、留言和维修', async t => {
+test('周目隔离与归档保护覆盖工程和维修', async t => {
   const f = await fixture(t); const project = await f.project({ status: 'active' });
   await f.call('project.status', { townId: f.townId, id: project.id, status: 'completed' });
-  const message = await f.call('message.create', { townId: f.townId, worldId: f.worldId, ...position, text: '旧留言' });
   const ticket = await f.call('ticket.create', { townId: f.townId, worldId: f.worldId, projectId: project.id, ...position, title: '维修' });
   const next = await f.call('world.create', { townId: f.townId, name: '第二周目', worldKey: 'world-2' });
   await rejects(f.call('ticket.create', { townId: f.townId, worldId: next.id, projectId: project.id, ...position, title: '跨周目' }), 'invalid_argument');
-  await rejects(f.call('message.create', { townId: f.townId, worldId: next.id, projectId: project.id, ...position, text: '跨周目' }), 'invalid_argument');
   await f.call('world.archive', { townId: f.townId, worldId: f.worldId });
-  for (const [action, payload] of [['project.update', { id: project.id, name: '改名' }], ['project.status', { id: project.id, status: 'active' }], ['message.delete', { id: message.id }], ['ticket.update', { id: ticket.id, status: 'working' }], ['ticket.create', { projectId: project.id, ...position, title: '新增' }]]) await rejects(f.call(action, { townId: f.townId, ...payload }), 'archived');
+  for (const [action, payload] of [['project.update', { id: project.id, name: '改名' }], ['project.status', { id: project.id, status: 'active' }], ['ticket.update', { id: ticket.id, status: 'working' }], ['ticket.create', { projectId: project.id, ...position, title: '新增' }]]) await rejects(f.call(action, { townId: f.townId, ...payload }), 'archived');
   assert.equal((await f.call('town.snapshot', { townId: f.townId, worldId: next.id })).projects.length, 0);
   assert.equal((await f.call('town.snapshot', { townId: f.townId, worldId: f.worldId })).projects.length, 1);
-});
-
-test('旧版数据迁移保留旧业务与私密留言，不对外泄露存档', async t => {
-  const f = await fixture(t); const project = await f.project();
-  const legacy = JSON.parse(await readFile(f.store.file, 'utf8')); legacy.version = 1;
-  const town = legacy.towns[f.townId];
-  town.tasks = [{ id: 'old-task' }]; town.materials = []; town.pledges = []; town.facilities = [{ id: 'old-facility' }];
-  town.projects[0].status = 'pending'; town.projects[0].memberIds = [f.alice.player.id]; town.projects[0].expectedAt = '2026-11-01';
-  town.tickets.push({ id: 'invalid-ticket', projectId: project.id, worldId: 'other-world', ...position, status: 'open' });
-  town.messages.push({ id: 'private', worldId: f.worldId, projectId: project.id, visibility: 'project', text: '旧组内内容' });
-  town.roles[1].permissions.push('task.claim');
-  await writeFile(f.store.file, JSON.stringify(legacy));
-  const service = await new TownService({ store: f.store }).initialize();
-  const snapshot = await service.handle('town.snapshot', { townId: f.townId }, f.alice.token);
-  assert.equal(snapshot.projects[0].status, 'planned');
-  assert.equal(snapshot.projects[0].expectedAt, undefined); assert.equal(snapshot.projects[0].memberIds, undefined);
-  assert.equal(snapshot.messages.length, 0); assert.equal(snapshot.town.legacy, undefined);
-  assert.equal(snapshot.tickets.length, 0);
-  assert.equal(JSON.stringify(snapshot).includes('old-task'), false);
-  assert.equal((await service.handle('town.list', {}, f.alice.token))[0].legacy, undefined);
-  await service.handle('town.update', { townId: f.townId, name: '保留存档' }, f.alice.token);
-  const saved = JSON.parse(await readFile(f.store.file, 'utf8'));
-  assert.equal(saved.version, 2); assert.equal(saved.towns[f.townId].legacy.tasks[0].id, 'old-task');
-  assert.equal(saved.towns[f.townId].legacy.privateMessages[0].text, '旧组内内容');
-  assert.equal(saved.towns[f.townId].legacy.projects[0].expectedAt, '2026-11-01');
-  assert.equal(saved.towns[f.townId].legacy.tickets[0].id, 'invalid-ticket');
-  const second = await new TownService({ store: f.store }).initialize();
-  assert.equal(second.state.towns[f.townId].legacy.tasks.length, 1);
 });
 
 test('不同小镇不能引用彼此数据，移除工程负责人前必须完成移交', async t => {
   const f = await fixture(t);
   const bob = await f.join();
-  const project = await f.project({ leaderId: bob.player.id });
+  const project = await f.project();
+  await f.call('project.update', { townId: f.townId, id: project.id, leaderId: bob.player.id });
   const { townId: otherTown } = await f.call('town.create', { name: '外部小镇' });
   await rejects(f.call('project.update', { townId: otherTown, id: project.id, name: '跨镇' }), 'not_found');
   await rejects(f.call('member.remove', { townId: f.townId, playerId: bob.player.id }), 'conflict');
@@ -316,7 +289,8 @@ test('不同小镇不能引用彼此数据，移除工程负责人前必须完�
 test('移除成员不改写历史周目的工程，历史登记者游戏名保留', async t => {
   const f = await fixture(t);
   const bob = await f.join();
-  const project = await f.project({ leaderId: bob.player.id });
+  const project = await f.project();
+  await f.call('project.update', { townId: f.townId, id: project.id, leaderId: bob.player.id });
   await f.call('world.archive', { townId: f.townId, worldId: f.worldId });
   const before = JSON.stringify((await f.snapshot()).projects);
   await f.call('member.remove', { townId: f.townId, playerId: bob.player.id });
@@ -349,7 +323,7 @@ test('HTTP 封装、请求格式、认证、请求大小及真实接口交互', 
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const endpoint = `http://127.0.0.1:${server.address().port}`;
   const request = (body, headers = {}) => fetch(`${endpoint}/api`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body });
-  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.5');
+  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.6');
   assert.equal((await request('{broken')).status, 400);
   assert.equal((await request('[]')).status, 400);
   assert.equal((await request(JSON.stringify({ action: 'town.list' }))).status, 401);
@@ -387,4 +361,51 @@ test('退出仅吊销当前设备，其他设备会话继续有效', async t => 
   await f.call('auth.logout');
   await rejects(f.call('town.list'), 'unauthenticated');
   assert.equal((await f.call('town.list', {}, otherDevice.token)).length, 1);
+});
+
+
+test('创建负责人固定当前 UUID，允许三种初始状态且开工完工必须有具体名称', async t => {
+  const f = await fixture(t); const bob = await f.join();
+  await rejects(f.project({ leaderId: bob.player.id }), 'invalid_argument');
+  for (const status of ['active', 'completed']) {
+    await rejects(f.project({ status, name: '' }), 'invalid_argument');
+    await rejects(f.project({ status, name: '预留地块' }), 'invalid_argument');
+  }
+  await rejects(f.project({ status: 'maintenance' }), 'invalid_argument');
+  const project = await f.project({ status: 'completed' });
+  assert.equal(project.leaderId, f.alice.player.id);
+  assert.equal(project.status, 'completed');
+  const active = await f.project({ status: 'active', dimension: 'minecraft:the_nether' });
+  assert.equal(active.status, 'active');
+  await rejects(f.project(), 'conflict');
+  await f.call('project.update', { townId: f.townId, id: project.id, leaderId: bob.player.id });
+  await rejects(f.call('project.update', { townId: f.townId, id: project.id, leaderId: f.alice.player.id }, bob.token), 'forbidden');
+});
+
+test('并发创建和移动在事务中禁止重叠，维度隔离，历史重叠仍可编辑简介', async t => {
+  const f = await fixture(t);
+  const results = await Promise.allSettled([f.project(), f.project()]);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(results.find(result => result.status === 'rejected').reason.code, 'conflict');
+  const first = results.find(result => result.status === 'fulfilled').value;
+  const second = await f.project({ chunks: { minX: 1, maxX: 1, minZ: 1, maxZ: 2 } });
+  await rejects(f.call('project.update', { townId: f.townId, id: second.id, chunks: first.chunks }), 'conflict');
+  await f.project({ dimension: 'minecraft:the_nether' });
+  f.service.state.towns[f.townId].projects[1].chunks = structuredClone(first.chunks);
+  const edited = await f.call('project.update', { townId: f.townId, id: second.id, purpose: '保留历史占区' });
+  assert.equal(edited.purpose, '保留历史占区');
+  assert.equal((await f.snapshot()).projects.length, 3);
+});
+
+test('只接受当前数据格式，旧版本拒绝启动且文件保持原样', async t => {
+  const f = await fixture(t);
+  const state = JSON.parse(await readFile(f.store.file, 'utf8'));
+  assert.equal(state.version, 3);
+  for (const version of [1, 2]) {
+    state.version = version;
+    const serialized = JSON.stringify(state);
+    await writeFile(f.store.file, serialized);
+    await rejects(new TownService({ store: f.store }).initialize(), 'invalid_argument');
+    assert.equal(await readFile(f.store.file, 'utf8'), serialized);
+  }
 });

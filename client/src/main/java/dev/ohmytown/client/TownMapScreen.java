@@ -1,6 +1,5 @@
-package dev.yetanothertown.client;
+package dev.ohmytown.client;
 
-import com.google.gson.JsonObject;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
@@ -8,12 +7,10 @@ import net.minecraft.client.input.KeyEvent;
 import net.minecraft.network.chat.Component;
 
 import java.util.List;
-import java.util.function.Consumer;
 
 /** 地图入口交由 Xaero 原生地图显示地形、框选与工程叠层。 */
 public final class TownMapScreen extends Screen {
     private final Screen parent;
-    private final Consumer<JsonObject> selected;
     private String information = "正在准备 Xaero 地图…";
     private TownStyle.Window window;
     private List<String> informationLines = List.of();
@@ -25,11 +22,9 @@ public final class TownMapScreen extends Screen {
     private int scroll;
     private int maximumScroll;
 
-    public TownMapScreen(Screen parent) { this(parent, null); }
-    public TownMapScreen(Screen parent, Consumer<JsonObject> selected) {
-        super(Component.literal(selected == null ? "小镇地图" : "按区块框选建设区域"));
+    public TownMapScreen(Screen parent) {
+        super(Component.literal("小镇地图"));
         this.parent = parent;
-        this.selected = selected;
     }
 
     @Override protected void init() {
@@ -51,7 +46,7 @@ public final class TownMapScreen extends Screen {
     private void open() {
         pendingOpen = false;
         information = "打开地图失败；请确认已进入世界，且 World Map 与 Minimap 前置版本正确。";
-        boolean opened = XaeroBridge.openMap(parent, selected);
+        boolean opened = XaeroBridge.openMap(parent);
         information = opened ? "已打开 Xaero 地图" : TownGateway.get().status;
         scroll = 0;
         layoutInformation();
