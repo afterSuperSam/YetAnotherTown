@@ -375,6 +375,12 @@
           "filename": "xaerominimap-fabric-26.3-26.6.0.jar",
           "url": "https://cdn.modrinth.com/data/1bokaNcj/versions/B2aG1aya/xaerominimap-fabric-26.3-26.6.0.jar",
           "sha512": "c704ed5154e66e891517b9b6778b3227a276823844ec70b348a32dc91d38e3500a6e74d8c69d7f9c68e3137b49511258b0b7d5e0b503391dd959f31e8c4e5112"
+        },
+        "modmenu": {
+          "version": "21.0.0",
+          "filename": "modmenu-21.0.0.jar",
+          "url": "https://cdn.modrinth.com/data/mOgUt4GM/versions/kyy7dbrZ/modmenu-21.0.0.jar",
+          "sha512": "588c0c557963f4778572ee81bfafc190b332c26d5926c5fe7e3e1614dcf8e14f58e3bc80a97694521dd05907e9753a7c8575048ea769e4dbf40a3db74a4e2606"
         }
       },
       "java": {
@@ -762,6 +768,12 @@
           "filename": "xaerominimap-fabric-26.2-26.6.0.jar",
           "url": "https://cdn.modrinth.com/data/1bokaNcj/versions/JRopWECg/xaerominimap-fabric-26.2-26.6.0.jar",
           "sha512": "7452e9d462d5803eb81ef0f931d265da86ce81917eba6de124cccee40eb244d7e4bfd88eb85f8bb739970ecd12d74a6b0754e60c3fcbbdd9cabb0012c1f04f46"
+        },
+        "modmenu": {
+          "version": "20.0.3",
+          "filename": "modmenu-20.0.3.jar",
+          "url": "https://cdn.modrinth.com/data/mOgUt4GM/versions/iRo7AZXf/modmenu-20.0.3.jar",
+          "sha512": "c8224aa7a460d0c56ccb9978a112e4ad0d3eb17e2796e0c468a2392d220749f4f602838a11b3666145462c26078a879ab8a2fc177aa440f58e189c92a0088d6e"
         }
       },
       "java": {
@@ -1125,6 +1137,12 @@
           "filename": "xaerominimap-fabric-26.1.2-26.6.0.jar",
           "url": "https://cdn.modrinth.com/data/1bokaNcj/versions/65WQiJg9/xaerominimap-fabric-26.1.2-26.6.0.jar",
           "sha512": "d04521d8606cc847d0ecbf4e0171a4dd16a6e277688d6942b78ec8413ea86309ead502ef18ce587a661bf7e581f50cfef7b1b1cfde2cd8c167001051092bb6c2"
+        },
+        "modmenu": {
+          "version": "18.0.2",
+          "filename": "modmenu-18.0.2.jar",
+          "url": "https://cdn.modrinth.com/data/mOgUt4GM/versions/ZJ6YTrMY/modmenu-18.0.2.jar",
+          "sha512": "37393e1d4a23a548463e92eb0687af69034ee7c308bd1d2d27d78df0292f124c4463f19d4b53128b59cda4e02d01d7ae09f06456d10abde19b6e450163e50e97"
         }
       },
       "java": {

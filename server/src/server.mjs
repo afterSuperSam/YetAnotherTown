@@ -7,7 +7,7 @@ import { ApiError, JsonStore, TownService, validateConfig } from './service.mjs'
 const STATUS = {
   invalid_argument: 400, unauthenticated: 401, forbidden: 403, not_found: 404,
   conflict: 409, archived: 409, payload_too_large: 413, unsupported_media_type: 415,
-  rate_limited: 429, upstream_unavailable: 503,
+  rate_limited: 429,
 };
 
 export function createHttpServer(service, config, logger = console) {
@@ -24,7 +24,7 @@ export function createHttpServer(service, config, logger = console) {
       const window = windows.get(address) ?? { until: now + 60000, count: 0 };
       window.count += 1; windows.set(address, window);
       if (window.count > config.requestsPerMinute || windows.size > 10000) throw new ApiError('rate_limited', '请求过多，请稍后重试');
-      if (request.method === 'GET' && request.url === '/health') { send(200, { ok: true, data: { version: '1.0.0' } }); return; }
+      if (request.method === 'GET' && request.url === '/health') { send(200, { ok: true, data: { version: '1.1.0' } }); return; }
       if (request.url !== '/api') throw new ApiError('not_found', '接口不存在');
       if (request.method !== 'POST') { response.setHeader('Allow', 'POST'); send(405, { ok: false, error: { code: 'invalid_argument', message: '此接口只接受 POST 请求' } }); return; }
       if (!/^application\/json(?:\s*;|$)/i.test(request.headers['content-type'] ?? '')) throw new ApiError('unsupported_media_type', '请求必须使用 application/json');

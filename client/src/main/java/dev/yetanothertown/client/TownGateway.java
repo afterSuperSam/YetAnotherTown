@@ -21,7 +21,6 @@ import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Consumer;
 
 /** 管理服务连接、临时会话和已选小镇的资料缓存。 */
 public final class TownGateway {
@@ -37,7 +36,7 @@ public final class TownGateway {
     private Path configurationPath;
     public volatile JsonObject snapshot = new JsonObject();
     public volatile JsonArray towns = new JsonArray();
-    public volatile String status = "请连接本地服务并验证正版身份";
+    public volatile String status = "进入世界后自动读取游戏身份并连接小镇服务";
     public volatile String townId = "";
     public volatile String worldId = "";
 
@@ -54,7 +53,7 @@ public final class TownGateway {
             if (Files.exists(configurationPath)) {
                 JsonObject parsed = JSON.fromJson(Files.readString(configurationPath), JsonObject.class);
                 if (parsed == null) throw new IllegalArgumentException("客户端配置不能为空");
-                Set<String> allowed = Set.of("endpoint", "openKey", "nearbyKey", "nearbyRadius", "pollIntervalSeconds", "animationEnabled", "mapBindings");
+                Set<String> allowed = Set.of("endpoint", "openKey", "nearbyKey", "keyBindingsVersion", "nearbyRadius", "pollIntervalSeconds", "animationEnabled", "mapBindings");
                 for (String key : parsed.keySet()) if (!allowed.contains(key)) throw new IllegalArgumentException("未知客户端配置项：" + key);
                 for (String key : parsed.keySet()) {
                     JsonElement value = parsed.get(key);
@@ -76,6 +75,8 @@ public final class TownGateway {
                     }
                     if (!valid) throw new IllegalArgumentException("客户端配置类型错误：" + key);
                 }
+                parsed.remove("openKey");
+                parsed.remove("nearbyKey");
                 ClientConfig loaded = JSON.fromJson(parsed, ClientConfig.class);
                 loaded.validate();
                 configuration = loaded;
@@ -90,8 +91,15 @@ public final class TownGateway {
     }
 
     public synchronized void configure(String endpoint) {
+        configure(endpoint, configuration.nearbyRadius, configuration.pollIntervalSeconds, configuration.animationEnabled);
+    }
+
+    public synchronized void configure(String endpoint, int nearbyRadius, int pollIntervalSeconds, boolean animationEnabled) {
         ClientConfig replacement = JSON.fromJson(JSON.toJson(configuration), ClientConfig.class);
         replacement.endpoint = endpoint.strip().replaceAll("/+$", "");
+        replacement.nearbyRadius = nearbyRadius;
+        replacement.pollIntervalSeconds = pollIntervalSeconds;
+        replacement.animationEnabled = animationEnabled;
         replacement.validate();
         ClientConfig previous = configuration;
         String previousToken = token;
@@ -99,10 +107,23 @@ public final class TownGateway {
         try { save(); }
         catch (IOException exception) {
             configuration = previous;
-            throw new IllegalStateException("保存服务地址失败", exception);
+            throw new IllegalStateException("保存客户端配置失败", exception);
         }
-        clearSession("服务地址已更新，请重新验证正版身份");
-        revoke(previous.endpoint, previousToken);
+        if (!previous.endpoint.equals(replacement.endpoint)) {
+            clearSession("服务地址已更新，将使用当前游戏身份重新连接");
+            revoke(previous.endpoint, previousToken);
+        } else status = "客户端配置已保存";
+    }
+
+    public boolean needsKeyMigration() { return configuration.keyBindingsVersion == 0; }
+
+    public synchronized void finishKeyMigration() {
+        ClientConfig previous = configuration;
+        ClientConfig replacement = JSON.fromJson(JSON.toJson(previous), ClientConfig.class);
+        replacement.keyBindingsVersion = 1;
+        configuration = replacement;
+        try { save(); }
+        catch (IOException exception) { configuration = previous; throw new IllegalStateException("保存按键迁移状态失败", exception); }
     }
 
     public String getBoundMapKey(String dimension) {
@@ -156,23 +177,16 @@ public final class TownGateway {
         }
     }
 
-    public CompletableFuture<JsonObject> login(String username, Consumer<String> joiner) {
+    public CompletableFuture<JsonObject> login(String playerId, String name) {
         long attempt = authentication.incrementAndGet();
-        status = "正在验证正版身份…";
-        return request("auth.challenge", object("username", username)).thenCompose(challenge -> {
-            requireAttempt(attempt);
-            return CompletableFuture.runAsync(() -> joiner.accept(challenge.get("serverHash").getAsString()))
-                .thenCompose(ignored -> {
-                    requireAttempt(attempt);
-                    return request("auth.verify", object("challengeId", challenge.get("challengeId").getAsString()));
-                });
-        }).thenCompose(result -> {
+        status = "正在使用当前游戏身份连接…";
+        return request("auth.login", object("playerId", playerId, "name", name)).thenCompose(result -> {
             requireAttempt(attempt);
             token = result.get("token").getAsString();
             player = result.getAsJsonObject("player");
-            status = "正版身份验证成功";
+            status = "已连接当前游戏身份";
             return refreshTowns().thenApply(ignored -> result);
-        }).exceptionallyCompose(exception -> failed(exception, "正版验证失败，请确认启动器已登录正版账号"));
+        }).exceptionallyCompose(exception -> failed(exception, "连接游戏身份失败，请检查小镇服务"));
     }
 
     public void logout() {
@@ -306,8 +320,7 @@ public final class TownGateway {
 
     public static final class ClientConfig {
         public String endpoint = "http://127.0.0.1:37841";
-        public int openKey = 75;
-        public int nearbyKey = 72;
+        public int keyBindingsVersion = 0;
         public int nearbyRadius = 48;
         public int pollIntervalSeconds = 10;
         public boolean animationEnabled = true;
@@ -322,8 +335,7 @@ public final class TownGateway {
                     || (address.getPath() != null && !address.getPath().isEmpty())
                     || !("https".equals(address.getScheme()) || "http".equals(address.getScheme()) && local))
                 throw new IllegalArgumentException("服务地址需为 HTTPS；本地服务可使用 HTTP，地址不带路径");
-            if (openKey < 32 || openKey > 348) throw new IllegalArgumentException("打开界面的按键代码无效");
-            if (nearbyKey < 32 || nearbyKey > 348 || nearbyKey == openKey) throw new IllegalArgumentException("附近说明按键无效，且不能与主界面按键相同");
+            if (keyBindingsVersion < 0 || keyBindingsVersion > 1) throw new IllegalArgumentException("按键迁移版本无效");
             if (nearbyRadius < 1 || nearbyRadius > 512) throw new IllegalArgumentException("附近提示距离需在 1～512 格之间");
             if (pollIntervalSeconds < 2 || pollIntervalSeconds > 300) throw new IllegalArgumentException("刷新间隔需在 2～300 秒之间");
             if (mapBindings == null || mapBindings.size() > 10000) throw new IllegalArgumentException("个人地图绑定最多保存 10000 项");

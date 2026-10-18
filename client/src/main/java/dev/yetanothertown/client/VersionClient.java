@@ -1,6 +1,8 @@
 package dev.yetanothertown.client;
 
 import com.google.gson.JsonObject;
+import com.mojang.blaze3d.platform.InputConstants;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.fabricmc.loader.api.FabricLoader;
@@ -8,6 +10,7 @@ import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.options.controls.KeyBindsScreen;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
@@ -16,17 +19,21 @@ import net.minecraft.world.item.Items;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.util.concurrent.CompletionException;
+import java.util.List;
 
 import static dev.yetanothertown.client.TownGateway.object;
 
-/** 统一入口、正版会话与版本间客户端生命周期。 */
+/** 统一入口、当前游戏身份与版本间客户端生命周期。 */
 public final class VersionClient {
     private static final System.Logger LOGGER = System.getLogger("YetAnotherTown");
+    private static final KeyMapping.Category KEY_CATEGORY = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("yetanothertown", "general"));
     private static KeyMapping openKey;
     private static KeyMapping nearbyKey;
     private static long nextRefresh;
     private static boolean refreshing;
+    private static boolean connectingIdentity;
+    private static long nextIdentityAttempt;
+    private static String observedIdentity = "";
     private static Method screenSetter;
     private static Method screenGetter;
     private static Field screenField;
@@ -44,24 +51,77 @@ public final class VersionClient {
     public static void initialize() {
         TownGateway gateway = TownGateway.get();
         gateway.initialize(FabricLoader.getInstance().getConfigDir());
-        Minecraft minecraft = Minecraft.getInstance();
-        initializeScreens(minecraft);
-        openKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.yetanothertown.open", gateway.config().openKey, KeyMapping.Category.MISC));
-        nearbyKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.yetanothertown.nearby", gateway.config().nearbyKey, KeyMapping.Category.MISC));
-        skin = minecraft.getSkinManager().createLookup(minecraft.getGameProfile(), false);
+        KeyMapping[] mappings = createKeyMappings();
+        openKey = KeyMappingHelper.registerKeyMapping(mappings[0]);
+        nearbyKey = KeyMappingHelper.registerKeyMapping(mappings[1]);
         TownHud.initialize();
+        ClientLifecycleEvents.CLIENT_STARTED.register(client -> {
+            initializeScreens(client);
+            if (gateway.needsKeyMigration()) {
+                if (repairLegacyKeyMappings(mappings)) client.options.save();
+                gateway.finishKeyMigration();
+            }
+            skin = client.getSkinManager().createLookup(client.getGameProfile(), false);
+            LOGGER.log(System.Logger.Level.INFO, "YetAnotherTown client initialized");
+        });
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            while (openKey.consumeClick()) show(new TownScreen(currentScreen()));
-            while (nearbyKey.consumeClick()) TownHud.openNearby();
-            if (navigation != null && (!gateway.loggedIn() || !navigationTown.equals(gateway.townId) || !navigationWorld.equals(gateway.worldId) || !XaeroBridge.isCurrentWorld())) clearNavigation();
             long now = System.nanoTime();
+            String identity = client.player == null ? "" : playerId() + ":" + playerName();
+            if (!observedIdentity.equals(identity)) {
+                gateway.logout();
+                observedIdentity = identity;
+                nextIdentityAttempt = 0;
+            }
+            if (!identity.isEmpty() && !gateway.loggedIn() && !connectingIdentity && now >= nextIdentityAttempt) connectIdentity(() -> {});
+            boolean openRequested = false, nearbyRequested = false;
+            while (openKey.consumeClick()) openRequested = true;
+            while (nearbyKey.consumeClick()) nearbyRequested = true;
+            if (client.player != null && currentScreen() == null) {
+                if (openRequested) show(new TownScreen());
+                else if (nearbyRequested) TownHud.openNearby();
+            }
+            if (navigation != null && (!gateway.loggedIn() || !navigationTown.equals(gateway.townId) || !navigationWorld.equals(gateway.worldId) || !XaeroBridge.isCurrentWorld())) clearNavigation();
             if (gateway.loggedIn() && !gateway.townId.isEmpty() && !refreshing && now >= nextRefresh) {
                 refreshing = true;
                 nextRefresh = now + gateway.config().pollIntervalSeconds * 1_000_000_000L;
                 gateway.refresh().whenComplete((value, error) -> client.execute(() -> refreshing = false));
             }
         });
-        LOGGER.log(System.Logger.Level.INFO, "YetAnotherTown client initialized");
+    }
+
+    static KeyMapping[] createKeyMappings() {
+        return new KeyMapping[] {
+            new KeyMapping("key.yetanothertown.open", InputConstants.KEY_K, KEY_CATEGORY),
+            new KeyMapping("key.yetanothertown.nearby", InputConstants.KEY_H, KEY_CATEGORY)
+        };
+    }
+
+    /** 只修复旧版在 SDL 下保存的默认错误绑定，保留其他原版重绑。 */
+    static boolean repairLegacyKeyMappings(KeyMapping[] mappings) {
+        if (InputConstants.KEY_K == 75) return false;
+        boolean changed = false;
+        if (mappings[0].saveString().equals("key.keyboard.page.up")) { mappings[0].setKey(mappings[0].getDefaultKey()); changed = true; }
+        if (mappings[1].saveString().equals("key.keyboard.pause")) { mappings[1].setKey(mappings[1].getDefaultKey()); changed = true; }
+        if (changed) KeyMapping.resetMapping();
+        return changed;
+    }
+
+    public static Screen createConfigScreen(Screen parent) {
+        TownGateway gateway = TownGateway.get();
+        var settings = gateway.config();
+        return new TownForm(parent, "YetAnotherTown · 配置", List.of(
+                TownForm.Field.text("endpoint", "服务地址", settings.endpoint),
+                TownForm.Field.number("nearbyRadius", "附近提示最大距离（方块）", settings.nearbyRadius),
+                TownForm.Field.number("pollIntervalSeconds", "资料刷新间隔（秒）", settings.pollIntervalSeconds),
+                TownForm.Field.toggle("animationEnabled", "界面动画", settings.animationEnabled)),
+                List.of("按键在原版设置的 YetAnotherTown 分类中修改，跟随游戏设置保存。"),
+                List.of(new TownForm.Action("打开原版按键绑定设置", () -> show(new KeyBindsScreen(currentScreen(), Minecraft.getInstance().options))),
+                        new TownForm.Action("打开小镇协作主页", () -> show(new TownScreen(currentScreen())))),
+                values -> {
+                    gateway.configure(values.get("endpoint").getAsString(), values.get("nearbyRadius").getAsInt(),
+                            values.get("pollIntervalSeconds").getAsInt(), values.get("animationEnabled").getAsBoolean());
+                    show(parent);
+                });
     }
 
     private static void initializeScreens(Minecraft minecraft) {
@@ -101,17 +161,22 @@ public final class VersionClient {
         catch (ReflectiveOperationException exception) { throw new IllegalStateException("读取 HUD 显示状态失败", exception); }
     }
 
-    static void authenticate(Runnable success) {
+    static void connectIdentity(Runnable success) {
         Minecraft minecraft = Minecraft.getInstance();
-        var user = minecraft.getUser();
-        TownGateway.get().login(user.getName(), serverHash -> {
-            try { minecraft.services().sessionService().joinServer(user.getProfileId(), user.getAccessToken(), serverHash); }
-            catch (Exception exception) { throw new CompletionException("正版会话验证失败，请重新登录启动器", exception); }
-        }).thenAccept(result -> minecraft.execute(success));
+        if (minecraft.player == null || connectingIdentity) return;
+        connectingIdentity = true;
+        nextIdentityAttempt = System.nanoTime() + TownGateway.get().config().pollIntervalSeconds * 1_000_000_000L;
+        TownGateway.get().login(playerId(), playerName()).whenComplete((result, failure) -> minecraft.execute(() -> {
+            connectingIdentity = false;
+            if (failure == null) {
+                if (TownGateway.get().towns.size() > 0) TownGateway.get().selectTown(TownGateway.get().towns.get(0).getAsJsonObject().get("id").getAsString());
+                success.run();
+            }
+        }));
     }
 
-    static String playerName() { return Minecraft.getInstance().getUser().getName(); }
-    static String playerId() { return Minecraft.getInstance().getUser().getProfileId().toString().replace("-", ""); }
+    static String playerName() { var client = Minecraft.getInstance(); return client.player == null ? client.getUser().getName() : client.player.getGameProfile().name(); }
+    static String playerId() { var client = Minecraft.getInstance(); return (client.player == null ? client.getUser().getProfileId() : client.player.getUUID()).toString().replace("-", ""); }
     static String dimension() {
         var level = Minecraft.getInstance().level;
         return level == null ? "minecraft:overworld" : level.dimension().identifier().toString();

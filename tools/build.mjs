@@ -6,7 +6,7 @@ import { prepare, root, versions } from './dependencies.mjs';
 const build = path.join(root, 'build');
 const sourceRoot = path.join(root, 'client', 'src', 'main', 'java');
 const mode = process.argv[2] ?? 'build';
-if (!['check', 'test', 'build'].includes(mode)) throw new Error('Usage: node tools/build.mjs check|test|build');
+if (!['check', 'test', 'client-test', 'build'].includes(mode)) throw new Error('Usage: node tools/build.mjs check|test|client-test|build');
 function run(command, arguments_, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, arguments_, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], ...options });
@@ -87,7 +87,7 @@ for (const version of versions) {
   console.log(`${version}: real dependency compilation passed (Java 25 bytecode)`);
 }
 const bootstrap = await files(path.join(root, 'bootstrap', 'src', 'main', 'java'));
-await run(javac, ['--release', '25', '-encoding', 'UTF-8', '-proc:none', '-cp', dependencies.loader, '-d', classes, ...bootstrap]);
+await run(javac, ['--release', '25', '-encoding', 'UTF-8', '-proc:none', '-cp', classpaths['26.3'].join(path.delimiter), '-d', classes, ...bootstrap]);
 await cp(path.join(root, 'client', 'src', 'main', 'resources'), classes, { recursive: true });
 const metadata = JSON.parse(await readFile(path.join(classes, 'fabric.mod.json'), 'utf8'));
 const artifact = path.join(build, 'libs', `yetanothertown-${metadata.version}.jar`);
@@ -99,14 +99,25 @@ await run(javac, ['--release', '25', '-encoding', 'UTF-8', '-d', verifier, path.
 for (const version of versions) {
   console.log(await run(java, ['-cp', verifier, 'VerifyLinks', artifact, 'dev.yetanothertown.v' + version.replaceAll('.', ''), path.join(build, `classpath-${version}.txt`)]));
 }
-if (mode === 'test') {
-  console.log(await run(process.execPath, ['--test', 'server/test/service.test.mjs']));
+if (mode === 'test' || mode === 'client-test') {
+  if (mode === 'test') console.log(await run(process.execPath, ['--test', 'server/test/service.test.mjs']));
   const tests = await files(path.join(root, 'client', 'src', 'test', 'java'));
   const testClasses = path.join(build, 'test-classes');
   await mkdir(testClasses, { recursive: true });
   const gateway = sourceFiles.find(file => file.endsWith('TownGateway.java'));
   const classpath = [classes, ...classpaths['26.3']].join(path.delimiter);
-  await run(javac, ['--release', '25', '--add-modules', 'jdk.httpserver', '-encoding', 'UTF-8', '-proc:none', '-cp', classpath, '-d', testClasses, gateway, ...tests]);
+  await run(javac, ['--release', '25', '--add-modules', 'jdk.httpserver', '-encoding', 'UTF-8', '-proc:none', '-cp', classpath, '-d', testClasses, gateway, ...tests.filter(source => source.endsWith('TownGatewayTest.java'))]);
   console.log(await run(java, ['--add-modules', 'jdk.httpserver', '-ea', '-cp', testClasses + path.delimiter + classpath, 'dev.yetanothertown.client.TownGatewayTest']));
+  const keyboardTest = tests.find(source => source.endsWith('TownInputTest.java'));
+  for (const version of versions) {
+    const variant = 'v' + version.replaceAll('.', '');
+    const directory = path.join(build, 'generated-tests', variant);
+    await mkdir(directory, { recursive: true });
+    const source = path.join(directory, 'TownInputTest.java');
+    await writeFile(source, (await readFile(keyboardTest, 'utf8')).replaceAll('dev.yetanothertown.client', `dev.yetanothertown.${variant}`));
+    const versionClasspath = [classes, ...classpaths[version]].join(path.delimiter);
+    await run(javac, ['--release', '25', '-encoding', 'UTF-8', '-proc:none', '-cp', versionClasspath, '-d', testClasses, source]);
+    console.log(version + ': ' + await run(java, ['-ea', '-cp', testClasses + path.delimiter + versionClasspath, `dev.yetanothertown.${variant}.TownInputTest`]));
+  }
 }
 console.log(`Single JAR: ${path.relative(root, artifact)} (${versions.join(', ')})`);

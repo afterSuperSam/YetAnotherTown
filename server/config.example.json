@@ -3,7 +3,6 @@
   "port": 37841,
   "dataFile": "./data/town.json",
   "sessionHours": 168,
-  "challengeSeconds": 90,
   "requestTimeoutSeconds": 15,
   "maxBodyBytes": 65536,
   "requestsPerMinute": 120,

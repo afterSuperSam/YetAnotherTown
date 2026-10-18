@@ -91,11 +91,11 @@ public final class TownScreen extends Screen {
         int y = contentTop - homeScroll;
         maximumHomeScroll = 0;
         label("玩家  " + VersionClient.playerName(), x + 34, y + 2, TEXT);
-        label(gateway.loggedIn() ? "正版身份已验证" : "请先验证正版身份", x + 34, y + 16, MUTED);
+        label(gateway.loggedIn() ? "游戏身份已连接" : "自动读取当前游戏身份", x + 34, y + 16, MUTED);
         button("连接设置", Math.max(x + 160, width - 110), y, 94, this::connectionForm);
         if (!gateway.loggedIn()) {
-            button("正版登录", x, y + 42, Math.min(180, contentWidth), () -> VersionClient.authenticate(this::rebuild));
-            int end = paragraph("使用当前启动器的正版会话完成认证。登录后可创建小镇，或用八位小镇 ID 加入。", x, y + 75, contentWidth, MUTED);
+            button("重新连接", x, y + 42, Math.min(180, contentWidth), () -> VersionClient.connectIdentity(this::rebuild));
+            int end = paragraph("进入世界后自动使用当前玩家 UUID 连接小镇服务，无需额外身份验证。连接后可创建或加入小镇。", x, y + 75, contentWidth, MUTED);
             maximumHomeScroll = Math.max(0, end + homeScroll - height + 44);
             return;
         }
@@ -166,7 +166,7 @@ public final class TownScreen extends Screen {
             Button password = button("设置 / 关闭加入密码", contentLeft, y + 56, Math.min(290, contentWidth), this::passwordForm);
             password.active = has("town.manage");
             button("选择当前小镇", contentLeft, y + 91, Math.min(290, contentWidth), this::chooseTown);
-            button("退出平台登录", contentLeft, y + 118, Math.min(290, contentWidth), () -> { gateway.logout(); tab = 0; rebuild(); });
+            button("重新连接游戏身份", contentLeft, y + 118, Math.min(290, contentWidth), () -> { gateway.logout(); tab = 0; VersionClient.connectIdentity(this::rebuild); rebuild(); });
         }
     }
 
@@ -340,7 +340,7 @@ public final class TownScreen extends Screen {
     }
 
     private void connectionForm() {
-        form("外置服务连接", List.of(text("endpoint", "服务地址", gateway.config().endpoint)), data -> { gateway.configure(stringValue(data, "endpoint")); VersionClient.show(this); });
+        VersionClient.show(VersionClient.createConfigScreen(this));
     }
     private void createTown() {
         form("注册小镇", List.of(text("name", "小镇名称", ""), text("introduction", "小镇介绍", ""), text("logo", "Logo：物品 ID 或 texture:命名空间:贴图路径.png", "minecraft:oak_sapling"), text("server", "所在服务器", VersionClient.serverAddress()), text("password", "加入密码（留空关闭，开启时至少 6 字）", "")), data -> TownForm.track(gateway.request("town.create", data).thenAccept(result -> Minecraft.getInstance().execute(() -> { gateway.selectTown(stringValue(result, "townId")); gateway.refreshTowns(); VersionClient.show(this); }))));
@@ -534,7 +534,7 @@ public final class TownScreen extends Screen {
         double progress = gateway.config().animationEnabled ? Math.min(1, (System.nanoTime() - openedAt) / 240_000_000d) : 1;
         double eased = 1 - Math.pow(1 - progress, 3);
         int titleColor = ((int) (70 + eased * 185) << 24) | (TEXT & 0xFFFFFF);
-        graphics.text(font, "YET ANOTHER TOWN", 13 + (int) ((1 - eased) * 10), 11, titleColor, true);
+        graphics.text(font, "Yet Another Town", 13 + (int) ((1 - eased) * 10), 11, titleColor, true);
         graphics.enableScissor(0, 60, width, height - 35);
         for (Card card : cards) {
             graphics.fill(card.x(), card.y(), card.x() + card.width(), card.y() + 45, 0xFF30392F);

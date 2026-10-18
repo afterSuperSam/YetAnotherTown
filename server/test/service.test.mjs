@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { ApiError, JsonStore, TownService, validateConfig, verifyMojang } from '../src/service.mjs';
+import { ApiError, JsonStore, TownService, validateConfig } from '../src/service.mjs';
 import { createHttpServer } from '../src/server.mjs';
 
 const PLAYERS = {
@@ -17,13 +17,8 @@ async function fixture(t, config = {}) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   let time = Date.parse('2026-10-18T00:00:00Z');
   const store = new JsonStore(path.join(directory, 'state.json'));
-  const verifier = async username => ({ id: PLAYERS[username], name: username });
-  const service = await new TownService({ store, verifier, now: () => time, config }).initialize();
-  const login = async username => {
-    const challenge = await service.handle('auth.challenge', { username });
-    assert.match(challenge.serverHash, /^[a-f0-9]{40}$/);
-    return service.handle('auth.verify', { challengeId: challenge.challengeId });
-  };
+  const service = await new TownService({ store, now: () => time, config }).initialize();
+  const login = async name => service.handle('auth.login', { playerId: PLAYERS[name], name });
   const alice = await login('Alice');
   const call = (action, payload = {}, token = alice.token) => service.handle(action, payload, token);
   const { townId } = await call('town.create', { name: '弥生小镇', server: 'example.test' });
@@ -39,47 +34,53 @@ async function fixture(t, config = {}) {
     if (promote) await call('member.role', { townId, playerId: account.player.id, roleId: 'member' });
     return account;
   };
-  return { directory, store, service, verifier, login, alice, call, townId, worldId, snapshot, project, join, advance: milliseconds => { time += milliseconds; } };
+  return { directory, store, service, login, alice, call, townId, worldId, snapshot, project, join, advance: milliseconds => { time += milliseconds; } };
 }
 
 test('配置拒绝未知项、非法范围和相互冲突的提示距离', () => {
   assert.equal(validateConfig().port, 37841);
+  const migrated = validateConfig({ challengeSeconds: 90, port: 37842 });
+  assert.equal(migrated.port, 37842);
+  assert.equal(Object.hasOwn(migrated, 'challengeSeconds'), false);
   for (const config of [{ port: 0 }, { port: '37841' }, { bypassAuthentication: true }, { sessionHours: -1 }, { defaultProximityRadius: 300, maximumProximityRadius: 100 }, JSON.parse('{"toString":1}'), JSON.parse('{"__proto__":{}}')]) assert.throws(() => validateConfig(config), ApiError);
 });
 
-test('正版验证挑战单次使用、到期失效；会话到期要求重新登录', async t => {
-  const f = await fixture(t, { challengeSeconds: 10, sessionHours: 1 });
-  const challenge = await f.call('auth.challenge', { username: 'Bob' });
-  const result = await f.call('auth.verify', { challengeId: challenge.challengeId });
-  assert.equal(result.player.id, PLAYERS.Bob);
-  await rejects(f.call('auth.verify', { challengeId: challenge.challengeId }), 'unauthenticated');
-  const expired = await f.call('auth.challenge', { username: 'Carol' });
-  f.advance(11000);
-  await rejects(f.call('auth.verify', { challengeId: expired.challengeId }), 'unauthenticated');
+test('直接使用游戏 UUID 登录且无外部请求，会话到期要求重新登录', async t => {
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('Unexpected external request'); });
+  const f = await fixture(t, { sessionHours: 1 });
+  const result = await f.login('Bob');
+  assert.deepEqual(result.player, { id: PLAYERS.Bob, name: 'Bob' });
+  assert.match(result.token, /^[a-f0-9]{64}$/);
+  assert.equal(globalThis.fetch.mock.callCount(), 0);
   f.advance(3600000);
   await rejects(f.call('town.list'), 'unauthenticated');
   await rejects(f.service.handle('town.list'), 'unauthenticated');
+  const refreshed = await f.login('Alice');
+  assert.equal((await f.call('town.list', {}, refreshed.token)).length, 1);
 });
 
-test('验证结果必须匹配被挑战的游戏名和正版 UUID，拒绝认证绕过', async t => {
+test('游戏 UUID 接受两种标准格式并规范化，登录更新现有成员游戏名', async t => {
   const f = await fixture(t);
-  f.service.verifier = async () => ({ id: PLAYERS.Bob, name: 'Bob' });
-  const challenge = await f.call('auth.challenge', { username: 'Carol' });
-  await rejects(f.call('auth.verify', { challengeId: challenge.challengeId, player: { id: PLAYERS.Carol, name: 'Carol' } }), 'unauthenticated');
-  await rejects(f.call('auth.challenge', { username: 'not valid' }), 'invalid_argument');
+  const bob = await f.join();
+  const updated = await f.call('auth.login', { playerId: 'BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB', name: 'Builder_2' });
+  assert.deepEqual(updated.player, { id: bob.player.id, name: 'Builder_2' });
+  const snapshot = await f.call('town.snapshot', { townId: f.townId }, updated.token);
+  assert.equal(snapshot.currentMember.name, 'Builder_2');
+  assert.equal(snapshot.members.filter(member => member.playerId === bob.player.id).length, 1);
+  const uppercase = await f.call('auth.login', { playerId: PLAYERS.Carol.toUpperCase(), name: 'C' });
+  assert.equal(uppercase.player.id, PLAYERS.Carol);
 });
 
-test('Mojang 请求仅调用官方 hasJoined；上游失败及未完成登录明确分类', async t => {
-  let observed;
-  t.mock.method(globalThis, 'fetch', async url => { observed = url; return new Response(JSON.stringify({ id: PLAYERS.Alice, name: 'Alice' }), { status: 200 }); });
-  assert.equal((await verifyMojang('Alice', 'hash')).id, PLAYERS.Alice);
-  assert.equal(observed.origin, 'https://sessionserver.mojang.com');
-  assert.equal(observed.searchParams.get('username'), 'Alice');
-  assert.equal(observed.searchParams.get('serverId'), 'hash');
-  globalThis.fetch.mock.mockImplementation(async () => new Response(null, { status: 204 }));
-  await rejects(verifyMojang('Alice', 'hash'), 'unauthenticated');
-  globalThis.fetch.mock.mockImplementation(async () => { throw new Error('offline'); });
-  await rejects(verifyMojang('Alice', 'hash'), 'upstream_unavailable');
+test('游戏身份拒绝畸形 UUID 与非法游戏名且失败不创建会话', async t => {
+  const f = await fixture(t);
+  const before = await readFile(f.store.file, 'utf8');
+  for (const playerId of [undefined, null, 123, '', 'x'.repeat(32), 'a'.repeat(31), 'a'.repeat(33), 'aaaaaaaa-aaaa-aaaa-aaaaaaaaaaaaaaaa', 'aaaaaaaaaaaa-aaaa-aaaa-aaaaaaaaaaaa', ` ${PLAYERS.Alice}`]) {
+    await rejects(f.call('auth.login', { playerId, name: 'Alice' }), 'invalid_argument');
+  }
+  for (const name of [undefined, null, 123, '', 'a'.repeat(17), 'not valid', '中文名', 'bad-name', ' Alice']) {
+    await rejects(f.call('auth.login', { playerId: PLAYERS.Alice, name }), 'invalid_argument');
+  }
+  assert.equal(await readFile(f.store.file, 'utf8'), before);
 });
 
 test('八位小镇 ID、密码哈希、可关闭密码、多小镇及新人只读', async t => {
@@ -305,7 +306,7 @@ test('移除成员不改写历史周目的项目组，历史登记者游戏名�
 test('原子持久化可重启读取，失败事务不改变内存或磁盘，损坏文件拒绝启动', async t => {
   const f = await fixture(t);
   await f.project();
-  const reloaded = await new TownService({ store: f.store, verifier: f.verifier }).initialize();
+  const reloaded = await new TownService({ store: f.store }).initialize();
   assert.equal((await reloaded.handle('town.snapshot', { townId: f.townId }, f.alice.token)).projects.length, 1);
   const original = await readFile(f.store.file, 'utf8');
   const save = f.store.save;
@@ -326,13 +327,18 @@ test('HTTP 封装、请求格式、认证、请求大小及真实接口交互', 
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const endpoint = `http://127.0.0.1:${server.address().port}`;
   const request = (body, headers = {}) => fetch(`${endpoint}/api`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body });
-  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0');
+  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.1.0');
   assert.equal((await request('{broken')).status, 400);
   assert.equal((await request('[]')).status, 400);
   assert.equal((await request(JSON.stringify({ action: 'town.list' }))).status, 401);
   assert.equal((await request('{}', { 'Content-Type': 'text/plain' })).status, 415);
   assert.equal((await request(JSON.stringify({ padding: 'x'.repeat(2048) }))).status, 413);
-  const response = await request(JSON.stringify({ action: 'town.snapshot', payload: { townId: f.townId } }), { Authorization: `Bearer ${f.alice.token}` });
+  const login = await request(JSON.stringify({ action: 'auth.login', payload: { playerId: 'AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA', name: 'Alice' } }));
+  assert.equal(login.status, 200);
+  const identity = await login.json();
+  assert.deepEqual(identity.data.player, { id: PLAYERS.Alice, name: 'Alice' });
+  assert.match(identity.data.token, /^[a-f0-9]{64}$/);
+  const response = await request(JSON.stringify({ action: 'town.snapshot', payload: { townId: f.townId } }), { Authorization: `Bearer ${identity.data.token}` });
   const result = await response.json();
   assert.equal(result.ok, true);
   assert.equal(result.data.town.name, '弥生小镇');
@@ -341,8 +347,8 @@ test('HTTP 封装、请求格式、认证、请求大小及真实接口交互', 
 
 test('登录和 HTTP 请求频率受限，退出后会话失效', async t => {
   const f = await fixture(t, { authenticationAttemptsPerMinute: 1, requestsPerMinute: 1 });
-  await f.call('auth.challenge', { username: 'Bob' });
-  await rejects(f.call('auth.challenge', { username: 'Bob' }), 'rate_limited');
+  await f.login('Bob');
+  await rejects(f.call('auth.login', { playerId: 'BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB', name: 'Renamed_Bob' }), 'rate_limited');
   const server = createHttpServer(f.service, f.service.config);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));

@@ -12,7 +12,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** 不加载游戏，验证连接边界、正版会话握手和异步缓存隔离。 */
+/** 不加载游戏，验证配置、游戏 UUID 会话和异步缓存隔离。 */
 public final class TownGatewayTest {
     private static int checks;
     private static void require(boolean condition, String message) {
@@ -24,6 +24,14 @@ public final class TownGatewayTest {
         var directory = Files.createTempDirectory("yat-gateway-test-");
         gateway.initialize(directory);
         require(Files.exists(directory.resolve("yetanothertown.json")), "default configuration saved");
+        Files.writeString(directory.resolve("yetanothertown.json"), "{\"openKey\":75,\"nearbyKey\":72,\"nearbyRadius\":48}");
+        gateway.initialize(directory);
+        require(gateway.needsKeyMigration(), "legacy numeric settings request a one-time native key migration");
+        gateway.finishKeyMigration();
+        gateway.initialize(directory);
+        require(!gateway.needsKeyMigration(), "native key migration marker survives reload");
+        String migratedConfiguration = Files.readString(directory.resolve("yetanothertown.json"));
+        require(!migratedConfiguration.contains("openKey") && !migratedConfiguration.contains("nearbyKey"), "numeric bindings no longer override native options");
         for (String invalid : new String[]{"http://example.com", "ftp://localhost", "https://example.com/api", "http://", "https://name:secret@example.com"}) {
             boolean rejected = false;
             try { gateway.configure(invalid); } catch (IllegalArgumentException exception) { rejected = true; }
@@ -33,6 +41,9 @@ public final class TownGatewayTest {
         CountDownLatch slowStarted = new CountDownLatch(1);
         CountDownLatch slowRelease = new CountDownLatch(1);
         CountDownLatch revoked = new CountDownLatch(1);
+        CountDownLatch loginStarted = new CountDownLatch(1);
+        CountDownLatch loginRelease = new CountDownLatch(1);
+        AtomicReference<JsonObject> claimedIdentity = new AtomicReference<>();
         var executor = Executors.newVirtualThreadPerTaskExecutor();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.setExecutor(executor);
@@ -44,8 +55,15 @@ public final class TownGatewayTest {
             int status = 200;
             String body;
             switch (action) {
-                case "auth.challenge" -> body = "{\"ok\":true,\"data\":{\"challengeId\":\"challenge\",\"serverHash\":\"server-hash\"}}";
-                case "auth.verify" -> body = "{\"ok\":true,\"data\":{\"token\":\"test-token\",\"player\":{\"id\":\"player-id\",\"name\":\"Sam\"}}}";
+                case "auth.login" -> {
+                    claimedIdentity.set(payload);
+                    if (payload.get("name").getAsString().equals("Delayed")) {
+                        loginStarted.countDown();
+                        try { loginRelease.await(5, TimeUnit.SECONDS); }
+                        catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
+                    }
+                    body = "{\"ok\":true,\"data\":{\"token\":\"test-token\",\"player\":{\"id\":\"" + payload.get("playerId").getAsString() + "\",\"name\":\"" + payload.get("name").getAsString() + "\"}}}";
+                }
                 case "auth.logout" -> { revoked.countDown(); body = "{\"ok\":true,\"data\":{}}"; }
                 case "town.list" -> body = "{\"ok\":true,\"data\":[{\"id\":\"00000001\",\"name\":\"测试镇\"}]}";
                 case "town.snapshot" -> {
@@ -95,12 +113,20 @@ public final class TownGatewayTest {
             gateway.worldId = "a".repeat(24);
             require(gateway.getBoundMapKey("minecraft:overworld").isEmpty(), "different services cannot reuse personal bindings");
             gateway.configure(endpoint);
-            AtomicReference<String> joined = new AtomicReference<>();
-            gateway.login("Sam", joined::set).get(5, TimeUnit.SECONDS);
-            require("server-hash".equals(joined.get()), "official client join receives challenge hash");
-            require(gateway.loggedIn() && gateway.player().get("name").getAsString().equals("Sam"), "verified identity retained");
+            String playerId = "a".repeat(32);
+            gateway.login(playerId, "Sam").get(5, TimeUnit.SECONDS);
+            require(claimedIdentity.get().get("playerId").getAsString().equals(playerId) && claimedIdentity.get().get("name").getAsString().equals("Sam"), "current game UUID and name sent directly");
+            require(claimedIdentity.get().size() == 2, "identity exchange sends no launcher access token or external verification data");
+            require(gateway.loggedIn() && gateway.player().get("name").getAsString().equals("Sam"), "current game identity retained");
             require(gateway.towns.size() == 1, "array envelope populates town list");
             require("Bearer test-token".equals(authorization.get()), "subsequent requests use session token");
+            gateway.configure(endpoint, 64, 5, false);
+            require(gateway.loggedIn(), "visual and polling settings do not log out the player");
+            require(gateway.config().nearbyRadius == 64 && gateway.config().pollIntervalSeconds == 5 && !gateway.config().animationEnabled, "configuration screen settings are applied");
+            require(Files.readString(directory.resolve("yetanothertown.json")).contains("personal-server|first"), "saving settings retains personal map bindings");
+            boolean rejectedSettings = false;
+            try { gateway.configure(endpoint, 0, 5, false); } catch (IllegalArgumentException exception) { rejectedSettings = true; }
+            require(rejectedSettings && gateway.config().nearbyRadius == 64, "invalid settings cannot partially overwrite configuration");
             gateway.request("denied", TownGateway.object()).handle((value, error) -> null).join();
             require(gateway.status.equals("没有操作权限"), "service errors remain Chinese");
             gateway.request("malformed", TownGateway.object()).handle((value, error) -> null).join();
@@ -115,23 +141,18 @@ public final class TownGatewayTest {
             gateway.request("expired", TownGateway.object()).handle((value, error) -> null).join();
             require(!gateway.loggedIn() && gateway.towns.isEmpty() && gateway.snapshot.isEmpty() && gateway.player().isEmpty(), "expired session clears private cached data");
             require(gateway.status.equals("登录已过期"), "expired session preserves visible error");
-            gateway.login("Sam", joined::set).get(5, TimeUnit.SECONDS);
-            CountDownLatch joining = new CountDownLatch(1);
-            CountDownLatch joinRelease = new CountDownLatch(1);
-            CompletableFuture<JsonObject> login = gateway.login("Sam", hash -> {
-                joining.countDown();
-                try { joinRelease.await(5, TimeUnit.SECONDS); }
-                catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
-            });
-            require(joining.await(5, TimeUnit.SECONDS), "join is in flight");
+            gateway.login(playerId, "Sam").get(5, TimeUnit.SECONDS);
+            CompletableFuture<JsonObject> login = gateway.login(playerId, "Delayed");
+            require(loginStarted.await(5, TimeUnit.SECONDS), "identity connection is in flight");
             gateway.logout();
             require(revoked.await(5, TimeUnit.SECONDS), "logout revokes the external service session");
-            joinRelease.countDown();
+            loginRelease.countDown();
             login.handle((value, error) -> null).get(5, TimeUnit.SECONDS);
             require(!gateway.loggedIn(), "logout cancels a pending login");
             require(!Files.readString(directory.resolve("yetanothertown.json")).contains("test-token"), "session token never persisted");
         } finally {
             slowRelease.countDown();
+            loginRelease.countDown();
             server.stop(0);
             executor.close();
         }

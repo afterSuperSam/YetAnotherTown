@@ -47,7 +47,7 @@ export async function prepare() {
       classpath.push(...await Promise.all(libraries.slice(index, index + 8).map(value => download(value.url, path.join(cache, 'libraries', value.path), value.sha1))));
     }
     const mods = {};
-    for (const slug of ['fabric-api', 'xaeros-world-map', 'xaeros-minimap']) {
+    for (const slug of ['fabric-api', 'xaeros-world-map', 'xaeros-minimap', 'modmenu']) {
       const candidates = await json(`https://api.modrinth.com/v2/project/${slug}/version?loaders=${encodeURIComponent('["fabric"]')}&game_versions=${encodeURIComponent(JSON.stringify([version]))}`);
       const selected = candidates.find(value => value.version_type === 'release') ?? candidates[0];
       if (!selected) throw new Error(`No Fabric ${slug} release for ${version}`);

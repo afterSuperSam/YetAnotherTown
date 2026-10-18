@@ -4,7 +4,7 @@ import path from 'node:path';
 
 export const DEFAULT_CONFIG = Object.freeze({
   host: '127.0.0.1', port: 37841, dataFile: './data/town.json', sessionHours: 168,
-  challengeSeconds: 90, requestTimeoutSeconds: 15, maxBodyBytes: 65536,
+  requestTimeoutSeconds: 15, maxBodyBytes: 65536,
   requestsPerMinute: 120, authenticationAttemptsPerMinute: 10,
   defaultProximityRadius: 32, maximumProximityRadius: 256, maximumRegionChunks: 65536,
 });
@@ -38,11 +38,15 @@ const tokenKey = token => createHash('sha256').update(token).digest('hex');
 
 export function validateConfig(input = {}) {
   check(object(input), 'invalid_argument', '配置必须是 JSON 对象');
-  for (const key of Object.keys(input)) check(Object.hasOwn(DEFAULT_CONFIG, key), 'invalid_argument', `未知配置项：${key}`);
-  const result = { ...DEFAULT_CONFIG, ...input };
+  const result = { ...DEFAULT_CONFIG };
+  for (const [key, value] of Object.entries(input)) {
+    if (key === 'challengeSeconds') continue;
+    check(Object.hasOwn(DEFAULT_CONFIG, key), 'invalid_argument', `未知配置项：${key}`);
+    result[key] = value;
+  }
   for (const key of ['host', 'dataFile']) check(typeof result[key] === 'string' && result[key].trim().length > 0, 'invalid_argument', `配置 ${key} 无效`);
   const limits = {
-    port: [1, 65535], sessionHours: [1, 8760], challengeSeconds: [10, 600],
+    port: [1, 65535], sessionHours: [1, 8760],
     requestTimeoutSeconds: [1, 120], maxBodyBytes: [1024, 1048576],
     requestsPerMinute: [1, 10000], authenticationAttemptsPerMinute: [1, 100],
     defaultProximityRadius: [1, 1024], maximumProximityRadius: [1, 1024],
@@ -123,25 +127,11 @@ export class JsonStore {
   }
 }
 
-export async function verifyMojang(username, serverHash) {
-  const url = new URL('https://sessionserver.mojang.com/session/minecraft/hasJoined');
-  url.searchParams.set('username', username);
-  url.searchParams.set('serverId', serverHash);
-  let response;
-  try { response = await fetch(url, { signal: AbortSignal.timeout(10000), redirect: 'error' }); }
-  catch { fail('upstream_unavailable', '正版身份验证服务暂时不可用，请稍后重试'); }
-  if (response.status === 204 || response.status === 404) fail('unauthenticated', '正版登录验证尚未完成，请重新登录');
-  check(response.ok, 'upstream_unavailable', '正版身份验证服务暂时不可用，请稍后重试');
-  try { return await response.json(); } catch { fail('upstream_unavailable', '正版身份验证响应无效'); }
-}
-
 export class TownService {
-  constructor({ store, verifier = verifyMojang, now = Date.now, config = {} }) {
+  constructor({ store, now = Date.now, config = {} }) {
     this.store = store;
-    this.verifier = verifier;
     this.now = now;
     this.config = validateConfig(config);
-    this.challenges = new Map();
     this.attempts = new Map();
     this.queue = Promise.resolve();
   }
@@ -162,28 +152,14 @@ export class TownService {
   async execute(action, payload, token) {
     check(typeof action === 'string' && object(payload), 'invalid_argument', '请求格式无效');
     const now = this.now();
-    if (action === 'auth.challenge') {
-      const username = text(payload.username, '游戏名', 16);
-      check(/^[A-Za-z0-9_]{1,16}$/.test(username), 'invalid_argument', '游戏名无效');
-      this.authenticationAttempt(`challenge:${username.toLowerCase()}`);
-      for (const [id, challenge] of this.challenges) if (challenge.expiresAt <= now) this.challenges.delete(id);
-      check(this.challenges.size < 10000, 'rate_limited', '登录请求过多，请稍后重试');
-      const challengeId = identifier();
-      const serverHash = randomBytes(20).toString('hex');
-      this.challenges.set(challengeId, { username, serverHash, expiresAt: now + this.config.challengeSeconds * 1000 });
-      return { challengeId, serverHash };
-    }
     const state = clone(this.state);
     let result;
     let mutated = false;
-    if (action === 'auth.verify') {
-      const challengeId = text(payload.challengeId, '验证标识', 64);
-      const challenge = this.challenges.get(challengeId);
-      this.challenges.delete(challengeId);
-      check(challenge && challenge.expiresAt > now, 'unauthenticated', '登录验证已过期，请重新登录');
-      const verified = await this.verifier(challenge.username, challenge.serverHash);
-      check(verified && /^[a-f0-9]{32}$/i.test(verified.id) && typeof verified.name === 'string' && verified.name.toLowerCase() === challenge.username.toLowerCase(), 'unauthenticated', '正版身份验证失败');
-      const player = { id: verified.id.toLowerCase(), name: verified.name };
+    if (action === 'auth.login') {
+      check(typeof payload.playerId === 'string' && /^(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/i.test(payload.playerId), 'invalid_argument', '游戏身份 UUID 无效');
+      check(typeof payload.name === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(payload.name), 'invalid_argument', '游戏名必须为 1–16 位字母、数字或下划线');
+      const player = { id: payload.playerId.replaceAll('-', '').toLowerCase(), name: payload.name };
+      this.authenticationAttempt(`login:${player.id}`);
       const sessionToken = randomBytes(32).toString('hex');
       for (const [existingToken, session] of Object.entries(state.sessions)) if (session.expiresAt <= now) delete state.sessions[existingToken];
       state.sessions[tokenKey(sessionToken)] = { player, expiresAt: now + this.config.sessionHours * 3600000 };
@@ -195,7 +171,7 @@ export class TownService {
       mutated = true;
     } else {
       const session = typeof token === 'string' ? state.sessions[tokenKey(token)] : undefined;
-      check(session && session.expiresAt > now, 'unauthenticated', '请先使用正版账号登录');
+      check(session && session.expiresAt > now, 'unauthenticated', '请先使用当前游戏身份登录');
       const context = { state, player: session.player, sessionKey: tokenKey(token), now, config: this.config };
       ({ result, mutated } = this.dispatch(action, payload, context));
     }

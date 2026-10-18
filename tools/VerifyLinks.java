@@ -39,7 +39,7 @@ public final class VerifyLinks {
         int checked = 0;
         while (entries.hasMoreElements()) {
             String name = entries.nextElement().getName();
-            if (!name.endsWith(".class") || !(name.startsWith(prefix + "/") || name.equals("dev/yetanothertown/Bootstrap.class"))) continue;
+            if (!name.endsWith(".class") || !(name.startsWith(prefix + "/") || name.equals("dev/yetanothertown/Bootstrap.class") || name.equals("dev/yetanothertown/ModMenuIntegration.class"))) continue;
             ClassModel model = load(name.substring(0, name.length() - 6));
             checked++;
             if (model.majorVersion() > 69) failures.add(name + ": requires Java newer than 25");
@@ -74,6 +74,8 @@ public final class VerifyLinks {
         boolean legacyHidden = options != null && resolves(options, "hideGui", "Z", true, new HashSet<>());
         boolean currentHidden = hud != null && resolves(hud, "isHidden", "()Z", false, new HashSet<>());
         if (!legacyHidden && !currentHidden) failures.add("Minecraft reflective HUD visibility contract changed");
+        if (!resolves(prefix + "/VersionClient", "createConfigScreen", "(Lnet/minecraft/client/gui/screens/Screen;)Lnet/minecraft/client/gui/screens/Screen;", false, new HashSet<>()))
+            failures.add("ModMenu config factory adapter target missing");
         if (!failures.isEmpty()) throw new IllegalStateException(String.join("\n", failures));
         System.out.println(prefix + ": " + checked + " classes, " + references + " references verified against real dependency bytecode; game not initialized");
     }
@@ -90,7 +92,7 @@ public final class VerifyLinks {
 
     private boolean scoped(String name) {
         return name.startsWith("net/minecraft/") || name.startsWith("net/fabricmc/")
-                || name.startsWith("xaero/") || name.startsWith("com/mojang/") || name.startsWith("dev/yetanothertown/");
+                || name.startsWith("xaero/") || name.startsWith("com/mojang/") || name.startsWith("com/terraformersmc/modmenu/") || name.startsWith("dev/yetanothertown/");
     }
 
     private ClassModel load(String name) throws IOException {
