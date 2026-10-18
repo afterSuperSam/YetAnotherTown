@@ -133,6 +133,11 @@ public final class TownGatewayTest {
             gateway.townId = "00000001";
             gateway.worldId = "a".repeat(24);
             gateway.bindCurrentMap("minecraft:overworld", "personal-server|first");
+            gateway.snapshot.addProperty("loaded", true);
+            var selectedContext = gateway.context();
+            var selectedSnapshot = gateway.snapshot;
+            gateway.selectWorld(gateway.worldId);
+            require(gateway.isCurrent(selectedContext) && gateway.snapshot == selectedSnapshot, "selecting the current world preserves map context and loaded permissions");
             gateway.bindCurrentMap("minecraft:the_nether", "personal-server|first");
             require(gateway.getBoundMapKey("minecraft:overworld").equals("personal-server|first"), "personal map binding saved");
             require(gateway.getBoundMapKey("minecraft:the_nether").equals("personal-server|first"), "dimensions may independently use the same local instance name");

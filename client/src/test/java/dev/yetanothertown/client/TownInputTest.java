@@ -24,6 +24,34 @@ public final class TownInputTest {
         require(!ProjectHighlighter.intersects(-32, -1, 0, 3, 0, 2, 0, 3), "Adjacent negative and positive chunks must not overlap");
         require(ProjectHighlighter.summary("第一行\n 第二行", 100).equals("第一行 第二行"), "Hover instructions must collapse line breaks without losing text");
         require(ProjectHighlighter.summary("a😀b", 2).equals("a😀…"), "Hover truncation must preserve complete Unicode characters");
+        var activeWorld = TownGateway.object("id", "0123456789abcdef01234567", "archived", false);
+        require(XaeroBridge.associationBlockReason(activeWorld, true, "minecraft:overworld", "minecraft:overworld", "town", "town").isEmpty(), "A loaded current map must allow one-step association without an existing binding");
+        activeWorld.addProperty("archived", true);
+        require(!XaeroBridge.associationBlockReason(activeWorld, true, "minecraft:overworld", "minecraft:overworld", "history", "history").isEmpty(), "Historical maps must never become the current player world through association");
+        activeWorld.addProperty("archived", false);
+        require(!XaeroBridge.associationBlockReason(activeWorld, false, "minecraft:overworld", "minecraft:overworld", "town", "town").isEmpty(), "A stale native main world must not associate a map");
+        require(!XaeroBridge.associationBlockReason(activeWorld, true, "minecraft:overworld", "minecraft:the_nether", "town", "town").isEmpty(), "Browsing another dimension must not associate it as the player's current map");
+        require(!XaeroBridge.associationBlockReason(activeWorld, true, "minecraft:overworld", "minecraft:overworld", "town", "history").isEmpty(), "An unsettled native map selection must not associate a different displayed map");
+        require(!XaeroBridge.associationBlockReason(new com.google.gson.JsonObject(), true, "minecraft:overworld", "minecraft:overworld", "town", "town").isEmpty(), "Missing selected-world metadata must not bypass historical protection");
+        TownGateway mapGateway = TownGateway.get();
+        String oldTown = mapGateway.townId, oldWorld = mapGateway.worldId;
+        var oldSnapshot = mapGateway.snapshot;
+        mapGateway.townId = "12345678"; mapGateway.worldId = "0123456789abcdef01234567";
+        JsonArray mapPermissions = new JsonArray(); mapPermissions.add("project.create");
+        mapGateway.snapshot = TownGateway.object("permissions", mapPermissions, "projects", new JsonArray());
+        var associationSnapshot = mapGateway.snapshot;
+        var associationContext = mapGateway.context();
+        try {
+            require(XaeroBridge.saveAssociation(mapGateway, "minecraft:overworld", "test-server|town", () -> true), "Successful native confirmation must save the current map in one step");
+            require(mapGateway.snapshot == associationSnapshot && mapGateway.isCurrent(associationContext), "Map association must preserve permissions, projects, and the selected-world context");
+            require(mapGateway.getBoundMapKey("minecraft:overworld").equals("test-server|town"), "Successful association must retain the confirmed map key");
+            require(!XaeroBridge.saveAssociation(mapGateway, "minecraft:overworld", "test-server|other", () -> false), "A native confirmation that did not establish the player map must not report success");
+            require(mapGateway.getBoundMapKey("minecraft:overworld").equals("test-server|town") && mapGateway.snapshot == associationSnapshot, "Failed native confirmation must restore the previous map without clearing permissions");
+            require(!XaeroBridge.saveAssociation(mapGateway, "minecraft:the_nether", "test-server|nether", () -> false) && mapGateway.getBoundMapKey("minecraft:the_nether").isEmpty(), "Failed first association must not leave an unusable binding behind");
+        } finally {
+            mapGateway.unbindMap("minecraft:overworld");
+            mapGateway.townId = oldTown; mapGateway.worldId = oldWorld; mapGateway.snapshot = oldSnapshot;
+        }
         KeyMapping[] mappings = VersionClient.createKeyMappings();
         KeyMapping.click(InputConstants.getKey("key.keyboard.k"));
         require(mappings[0].consumeClick(), "Physical K did not reach the town menu mapping");

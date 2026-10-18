@@ -381,6 +381,7 @@ public final class TownGateway {
     }
 
     public synchronized void selectWorld(String id) {
+        if (worldId.equals(id)) return;
         selection.incrementAndGet();
         worldId = id;
         snapshot = new JsonObject();

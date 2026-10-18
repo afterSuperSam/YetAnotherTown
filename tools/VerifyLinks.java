@@ -106,6 +106,7 @@ public final class VerifyLinks {
                 new String[]{"xaero/map/MapProcessor", "confirmMultiworld", "(Lxaero/map/world/MapDimension;)Z"},
                 new String[]{prefix + "/XaeroBridge", "registerHighlighter", "(Ljava/lang/Object;)V"},
                 new String[]{prefix + "/XaeroBridge", "playerMapKey", "(Ljava/lang/String;)Ljava/lang/String;"},
+                new String[]{prefix + "/XaeroBridge", "associateCurrentMap", "(Lnet/minecraft/client/gui/screens/Screen;)Z"},
                 new String[]{prefix + "/XaeroBridge", "addMapOptions", "(Ljava/lang/Object;Ljava/lang/Object;)V"}))
             if (!resolves(method[0], method[1], method[2], false, new HashSet<>())) failures.add("Native map hook target missing: " + String.join(" ", method));
 
@@ -115,6 +116,20 @@ public final class VerifyLinks {
         if (!calls(load(prefix + "/XaeroBridge"), "registerHighlighter", "xaero/map/highlight/HighlighterRegistry", "register"))
             failures.add("Project highlighter is not registered with the native registry");
         ClassModel bridge = load(prefix + "/XaeroBridge");
+        if (calls(bridge, "associateCurrentMap", prefix + "/TownGateway", "selectWorld")
+                || calls(bridge, "saveAssociation", prefix + "/TownGateway", "selectWorld")
+                || !calls(bridge, "associateCurrentMap", prefix + "/XaeroBridge", "saveAssociation")
+                || !calls(bridge, "saveAssociation", prefix + "/TownGateway", "bindCurrentMap")
+                || !calls(bridge, "saveAssociation", prefix + "/TownGateway", "unbindMap"))
+            failures.add("One-step map association must preserve the selected-world snapshot and restore failed bindings");
+        boolean confirmsPlayer = bridge != null && bridge.methods().stream().anyMatch(method -> {
+            String name = method.methodName().stringValue();
+            return name.startsWith("lambda$associateCurrentMap$")
+                    && calls(bridge, name, "xaero/map/MapProcessor", "setMultiworld")
+                    && calls(bridge, name, "xaero/map/MapProcessor", "confirmMultiworld")
+                    && calls(bridge, name, prefix + "/XaeroBridge", "playerMapKey");
+        });
+        if (!confirmsPlayer) failures.add("Map association must reselect and confirm through Xaero, then verify the actual player map identity");
         if (!calls(bridge, "playerMapKey", "xaero/map/world/MapConnectionNode", "getDimId")
                 || !usesField(bridge, "playerMapKey", "xaero/map/MapProcessor", "mainWorld")
                 || !calls(bridge, "playerMapKey", "xaero/map/world/MapWorld", "getPlayerMapKey")
@@ -131,6 +146,12 @@ public final class VerifyLinks {
                 || calls(nativeDimension, "getPlayerMapKey", "xaero/map/world/MapDimension", "getCurrentMultiworld"))
             failures.add("Xaero player map identity contract changed; inspect automatic and confirmed multiworld selection before adapting");
         ClassModel nativeProcessor = load("xaero/map/MapProcessor");
+        if (!usesField(nativeDimension, "confirmMultiworldUnsynced", "xaero/map/world/MapDimension", "futureMultiworldWritable")
+                || !usesField(nativeDimension, "setMultiworldUnsynced", "xaero/map/world/MapDimension", "futureMultiworldWritable")
+                || !usesField(nativeProcessor, "isWritingPaused", "xaero/map/MapProcessor", "pauseWriting")
+                || !usesField(nativeProcessor, "isProcessingPaused", "xaero/map/MapProcessor", "pauseProcessing")
+                || usesField(nativeProcessor, "isProcessingPaused", "xaero/map/MapProcessor", "pauseWriting"))
+            failures.add("Native confirmation or writer-pause lifecycle changed; inspect reselect-confirm behavior before adapting");
         if (!usesField(nativeProcessor, "confirmMultiworld", "xaero/map/MapProcessor", "mainWorld")
                 || !calls(nativeProcessor, "confirmMultiworld", "xaero/map/world/MapWorld", "getPotentialDimId")
                 || !calls(nativeProcessor, "confirmMultiworld", "xaero/map/world/MapWorld", "getCurrentDimension")

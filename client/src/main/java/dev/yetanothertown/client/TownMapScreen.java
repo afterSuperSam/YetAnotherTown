@@ -35,7 +35,7 @@ public final class TownMapScreen extends Screen {
         bodyBottom = window.bottom() - 91;
         layoutInformation();
         int buttonWidth = Math.min(250, window.width() - 40);
-        addRenderableWidget(TownStyle.button("前往绑定当前地图", (width - buttonWidth) / 2, window.bottom() - 81, buttonWidth, () -> TownScreen.openMapBinding(this)));
+        addRenderableWidget(TownStyle.button("关联此地图并继续", (width - buttonWidth) / 2, window.bottom() - 81, buttonWidth, () -> TownScreen.openMapBinding(parent)));
         addRenderableWidget(TownStyle.button("重新打开 Xaero 地图", (width - buttonWidth) / 2, window.bottom() - 55, buttonWidth, this::open));
         addRenderableWidget(TownStyle.button("返回小镇", (width - buttonWidth) / 2, window.bottom() - 29, buttonWidth, this::onClose));
     }

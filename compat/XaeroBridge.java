@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -134,8 +135,7 @@ public final class XaeroBridge {
             if (selection == null || dimension == null) return;
             JsonObject chunks = selectionChunks(selection, dimension.identifier().toString());
             if (map.getMapProcessor() != processor() || !matchingMap(dimension)) {
-                options.add(option(map, options.size(), "小镇工程：当前底图未关联所选周目", () -> {}).setActive(false));
-                addBindingOption(map, options);
+                addAssociationOption(map, options, chunks);
                 return;
             }
             TownGateway.Context context = gateway.context();
@@ -154,18 +154,7 @@ public final class XaeroBridge {
                 TownScreen.createProject(map, chunks.deepCopy());
             }).setActive(reason.isEmpty()));
             if (!isCurrentWorld() && !archived(selectedWorld())) {
-                if (canConfirmPlayerMap(map, dimension)) options.add(option(map, options.size(), "确认当前地图为所在世界", () -> {
-                    if (!validMenu(map, context, world, mapKey, dimension) || !canConfirmPlayerMap(map, dimension)) return;
-                    MapDimension mapDimension = world.getDimension(dimension);
-                    if (!map.getMapProcessor().confirmMultiworld(mapDimension)) {
-                        gateway.status = "Xaero 暂时无法确认此地图，请等待地图加载完成后重试";
-                        return;
-                    }
-                    if (map instanceof BoundMap bound) bound.keepConfirmedMap(mapDimension);
-                    gateway.status = isCurrentWorld() ? "已在 Xaero 确认当前玩家地图，可重新右键创建工程" : "Xaero 已接受确认，请等待地图同步后重新右键";
-                    ProjectHighlighter.refresh();
-                }));
-                addBindingOption(map, options);
+                addAssociationOption(map, options, chunks);
             }
             if (!overlaps.isEmpty() && !gateway.config().projectOverlayEnabled) options.add(option(map, options.size(), "显示选区冲突区域", () -> {
                 gateway.setProjectOverlayEnabled(true);
@@ -201,18 +190,33 @@ public final class XaeroBridge {
         };
     }
 
-    private static void addBindingOption(GuiMap map, ArrayList<RightClickOption> options) {
+    private static void addAssociationOption(GuiMap map, ArrayList<RightClickOption> options, JsonObject chunks) {
         TownGateway gateway = TownGateway.get();
         TownGateway.Context context = gateway.context();
         MapProcessor processor = map.getMapProcessor();
         MapWorld world = processor.getMapWorld();
         String key = currentMapKey(), dimension = currentMapDimension();
-        options.add(option(map, options.size(), "前往绑定当前地图", () -> {
+        String reason = currentAssociationBlockReason();
+        options.add(option(map, options.size(), reason.isEmpty() ? "关联此地图并继续" : "不能关联：" + reason, () -> {
             if (!gateway.isCurrent(context) || processor != processor() || processor.getMapWorld() != world
-                    || !key.equals(currentMapKey()) || !dimension.equals(currentMapDimension())) return;
+                    || !key.equals(currentMapKey()) || !dimension.equals(currentMapDimension()) || !dimension.equals(stringValue(chunks, "dimension"))) return;
+            if (associateCurrentMap(map)) {
+                if (!gateway.isCurrent(context) || !key.equals(currentMapKey()) || !dimension.equals(currentMapDimension())) return;
+                if (creationBlockReason().isEmpty()) {
+                    gateway.setProjectOverlayEnabled(true);
+                    ProjectHighlighter.refresh();
+                    if (projectsInSelection(chunks).isEmpty()) {
+                        if (map instanceof BoundMap bound) bound.suspendForForm();
+                        TownScreen.createProject(map, chunks.deepCopy());
+                        return;
+                    }
+                    gateway.status = "地图已关联；选区与已有工程重叠，请重新选择空闲区块";
+                } else gateway.status = "地图已关联；" + creationBlockReason();
+                return;
+            }
             if (map instanceof BoundMap bound) bound.suspendForForm();
-            TownScreen.openMapBinding(map);
-        }));
+            VersionClient.show(new TownForm(map, "关联地图", List.of(), List.of(gateway.status), List.of(), null));
+        }).setActive(reason.isEmpty()));
     }
 
     private static boolean validMenu(GuiMap map, TownGateway.Context context, MapWorld world, String key, ResourceKey<Level> dimension) {
@@ -226,19 +230,83 @@ public final class XaeroBridge {
         if (!contains(arrayValue(TownGateway.get().snapshot, "permissions"), "project.create")) return "当前成员只读";
         if (isCurrentWorld()) return "";
         if (Minecraft.getInstance().player == null) return "请先进入此周目的游戏世界";
-        return playerMapKey().isEmpty() ? "Xaero 尚未确认玩家地图，请先确认当前实例" : "玩家地图与此周目绑定不同，请核对地图绑定";
+        return "请关联此地图后继续";
     }
 
-    /** 只由玩家显式确认已绑定的当前维度，归档、只读和切换中的底图不提供入口。 */
-    private static boolean canConfirmPlayerMap(GuiMap map, ResourceKey<Level> dimension) {
+    /** 一次显式关联同时保存个人绑定并确认原生玩家实例，不重新选择或清空周目资料。 */
+    public static boolean associateCurrentMap(Screen returnTo) {
+        TownGateway gateway = TownGateway.get();
+        String reason = currentAssociationBlockReason();
+        if (!reason.isEmpty()) { gateway.status = reason; return false; }
+        MapProcessor processor = processor();
+        MapWorld world = processor.getMapWorld();
+        MapDimension dimension = world.getCurrentDimension();
+        String dimensionId = dimension.getDimId().identifier().toString(), key = currentMapKey();
+        TownGateway.Context context = gateway.context();
+        synchronized (processor) {
+            if (!gateway.isCurrent(context) || processor != processor() || world != processor.getMapWorld()
+                    || !key.equals(currentMapKey()) || !currentAssociationBlockReason().isEmpty()) {
+                gateway.status = "地图或周目已变化，请在当前地图重新关联";
+                return false;
+            }
+            if (!saveAssociation(gateway, dimensionId, key, () -> {
+                if (key.equals(playerMapKey(dimensionId))) return true;
+                processor.setMultiworld(dimension, dimension.getCurrentMultiworld());
+                return processor.confirmMultiworld(dimension) && key.equals(playerMapKey(dimensionId));
+            })) return false;
+            if (returnTo instanceof BoundMap bound) bound.keepConfirmedMap(dimension);
+        }
+        ProjectHighlighter.refresh();
+        if (!(returnTo instanceof GuiMap)) return openMap(returnTo);
+        if (VersionClient.currentScreen() != returnTo) VersionClient.show(returnTo);
+        return true;
+    }
+
+    static boolean saveAssociation(TownGateway gateway, String dimension, String key, BooleanSupplier confirmPlayerMap) {
+        String previous = gateway.getBoundMapKey(dimension);
+        TownGateway.Context context = gateway.context();
+        boolean saved = false;
+        try {
+            gateway.bindCurrentMap(dimension, key);
+            saved = true;
+            if (!confirmPlayerMap.getAsBoolean()) throw new IllegalStateException("Xaero 尚未确认此玩家地图，请等待底图加载完成后重试");
+            if (!gateway.isCurrent(context)) throw new IllegalStateException("周目或登录状态已变化，请重新关联当前地图");
+            gateway.status = "地图已关联";
+            return true;
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            if (saved && gateway.isCurrent(context)) {
+                try {
+                    if (previous.isEmpty()) gateway.unbindMap(dimension); else gateway.bindCurrentMap(dimension, previous);
+                } catch (IllegalArgumentException | IllegalStateException rollback) {
+                    exception.addSuppressed(rollback);
+                    LOGGER.log(System.Logger.Level.ERROR, "Could not restore the previous personal map binding", exception);
+                    gateway.status = "关联未完成，恢复原绑定失败；请检查客户端配置文件是否可写";
+                    return false;
+                }
+            }
+            gateway.status = exception.getMessage();
+            return false;
+        }
+    }
+
+    private static String currentAssociationBlockReason() {
         Minecraft client = Minecraft.getInstance();
-        MapProcessor processor = map.getMapProcessor();
-        if (archived(selectedWorld()) || !contains(arrayValue(TownGateway.get().snapshot, "permissions"), "project.create")
-                || client.player == null || client.level == null || processor != processor() || processor.mainWorld != client.level
-                || client.player.level() != client.level || !client.level.dimension().equals(dimension) || !matchingMap(dimension)) return false;
-        MapDimension mapDimension = processor.getMapWorld().getDimension(dimension);
-        return mapDimension != null && mapDimension.getCurrentMultiworld() != null
-                && mapDimension.getCurrentMultiworld().equals(mapDimension.getFutureMultiworldUnsynced());
+        MapProcessor processor = processor();
+        MapWorld world = processor == null ? null : processor.getMapWorld();
+        MapDimension dimension = world == null ? null : world.getCurrentDimension();
+        boolean live = client.player != null && client.level != null && processor != null && processor.isMapWorldUsable()
+                && processor.mainWorld == client.level && client.player.level() == client.level;
+        return associationBlockReason(selectedWorld(), live, client.level == null ? "" : client.level.dimension().identifier().toString(),
+                currentMapDimension(), dimension == null ? null : dimension.getCurrentMultiworld(), dimension == null ? null : dimension.getFutureMultiworldUnsynced());
+    }
+
+    static String associationBlockReason(JsonObject world, boolean live, String playerDimension, String viewedDimension, String current, String future) {
+        if (world.isEmpty()) return "请先选择当前周目，等待资料加载完成";
+        if (archived(world)) return "历史周目只读，请使用历史地图关联";
+        if (!live) return "请先进入游戏，等待 Xaero 玩家地图加载完成";
+        if (!playerDimension.equals(viewedDimension)) return "请切回玩家当前维度后关联";
+        if (current == null || !current.equals(future)) return "底图正在切换，请加载完成后关联";
+        return "";
     }
 
     static JsonObject selectionChunks(MapTileSelection selection, String dimension) {
@@ -276,6 +344,13 @@ public final class XaeroBridge {
             return false;
         }
         JsonObject world = selectedWorld();
+        if (!world.isEmpty() && !archived(world)) {
+            if (suspendedMap != null) suspendedMap.finishViewing();
+            if (returnTo instanceof GuiMap existing && existing.getMapProcessor() == processor && !(existing instanceof BoundMap)) {
+                VersionClient.show(existing);
+            } else VersionClient.show(new GuiMap(returnTo, returnTo, processor, minecraft.player));
+            return true;
+        }
         String[] identity = gateway.getBoundMapKey(currentMapDimension()).split("\\|", 2);
         MapWorld mapWorld = processor.getMapWorld();
         MapDimension dimension = mapWorld.getCurrentDimension();
