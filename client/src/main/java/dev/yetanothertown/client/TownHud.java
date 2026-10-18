@@ -63,23 +63,25 @@ public final class TownHud {
         if (minecraft.player == null || VersionClient.hudHidden() || VersionClient.currentScreen() != null) return;
         List<Nearby> nearby = nearby();
         int x = 10;
-        int y = Math.max(38, graphics.guiHeight() / 3);
-        int cardWidth = Math.min(210, graphics.guiWidth() / 2 - 12);
+        JsonObject target = VersionClient.navigation();
+        int y = Math.max(target == null ? 48 : 94, graphics.guiHeight() / 3);
+        int cardWidth = Math.min(218, graphics.guiWidth() / 2 - 12);
         if (!nearby.isEmpty()) {
             int shown = Math.min(3, nearby.size());
-            graphics.fill(x, y, x + cardWidth, y + 22 + shown * 27, 0xDD222B24);
-            graphics.fill(x, y, x + 2, y + 22 + shown * 27, TownScreen.ACCENT);
-            graphics.text(minecraft.font, "附近 " + nearby.size() + " · " + VersionClient.nearbyKeyLabel() + " 展开", x + 8, y + 7, TownScreen.ACCENT, true);
-            y += 24;
+            TownStyle.panel(graphics, x, y, cardWidth, 27 + shown * 30, false);
+            graphics.text(minecraft.font, "附近 · " + nearby.size(), x + 9, y + 8, TownStyle.ACCENT, false);
+            String shortcut = minecraft.font.plainSubstrByWidth(VersionClient.nearbyKeyLabel() + " 展开", cardWidth / 2 - 10);
+            graphics.text(minecraft.font, shortcut, x + cardWidth - 9 - minecraft.font.width(shortcut), y + 8, TownStyle.MUTED, false);
+            graphics.fill(x + 8, y + 21, x + cardWidth - 8, y + 22, TownStyle.LINE);
+            y += 28;
             for (int index = 0; index < shown; index++) {
                 Nearby entry = nearby.get(index);
                 String title = TownScreen.stringValue(entry.record(), "name", TownScreen.stringValue(entry.record(), "title", TownScreen.stringValue(entry.record(), "text")));
-                graphics.text(minecraft.font, minecraft.font.plainSubstrByWidth(entry.category() + " · " + title, cardWidth - 16), x + 8, y, TownScreen.TEXT, true);
-                graphics.text(minecraft.font, Math.round(entry.distance()) + "m · " + TownScreen.stringValue(entry.record(), "dimension").replace("minecraft:", ""), x + 8, y + 11, TownScreen.MUTED, false);
-                y += 27;
+                graphics.text(minecraft.font, minecraft.font.plainSubstrByWidth(entry.category() + " · " + title, cardWidth - 18), x + 9, y, TownStyle.TEXT, true);
+                graphics.text(minecraft.font, minecraft.font.plainSubstrByWidth(Math.round(entry.distance()) + "m · " + TownScreen.stringValue(entry.record(), "dimension").replace("minecraft:", ""), cardWidth - 18), x + 9, y + 12, TownStyle.MUTED, false);
+                y += 30;
             }
         }
-        JsonObject target = VersionClient.navigation();
         if (target != null) {
             int navY = 38;
             String name = TownScreen.stringValue(target, "name", TownScreen.stringValue(target, "title", "导航目标"));
@@ -92,9 +94,9 @@ public final class TownHud {
                 String direction = Math.abs(angle) <= 20 ? "↑ 前方" : Math.abs(angle) >= 160 ? "↓ 后方" : angle < 0 ? "← 左侧" : "→ 右侧";
                 instruction = direction + " · " + Math.round(Math.hypot(dx, dz)) + "m";
             }
-            graphics.fill(x, navY, x + cardWidth, navY + 31, 0xDD222B24);
-            graphics.text(minecraft.font, minecraft.font.plainSubstrByWidth(name, cardWidth - 16), x + 8, navY + 5, TownScreen.ACCENT, true);
-            graphics.text(minecraft.font, minecraft.font.plainSubstrByWidth(instruction, cardWidth - 16), x + 8, navY + 18, TownScreen.TEXT, true);
+            TownStyle.panel(graphics, x, navY, cardWidth, 44, true);
+            graphics.text(minecraft.font, minecraft.font.plainSubstrByWidth(name, cardWidth - 18), x + 9, navY + 9, TownStyle.ACCENT, true);
+            graphics.text(minecraft.font, minecraft.font.plainSubstrByWidth(instruction, cardWidth - 18), x + 9, navY + 25, TownStyle.TEXT, false);
         }
     }
 

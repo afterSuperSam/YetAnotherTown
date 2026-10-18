@@ -33,7 +33,9 @@ node src/server.mjs
 
 原版“选项 → 控制 → 按键绑定 → YetAnotherTown”可以修改、清空或重置两个按键，修改随游戏 `options.txt` 保存。默认键使用各版本原版常量，兼容 26.3 的 SDL 扫描码；首次升级会修复旧版误保存的 PageUp／Pause 默认绑定，其他自定义重绑保留。旧配置中的数字 `openKey`／`nearbyKey` 自动迁移，不再覆盖原版设置。
 
-可选安装对应版本的 [ModMenu](https://modrinth.com/mod/modmenu)：26.3 用 21.0.0、26.2 用 20.0.3、26.1.2 用 18.0.2。在模组列表选择 YetAnotherTown 并打开配置，可修改服务地址、提示距离、刷新间隔和动画，并跳转原版按键设置。小镇主页的“连接设置”也可打开同一页面，不需要 ModMenu。
+可选安装对应版本的 [ModMenu](https://modrinth.com/mod/modmenu)：26.3 用 21.0.0、26.2 用 20.0.3、26.1.2 用 18.0.2。在模组列表选择 YetAnotherTown 并打开配置，可修改服务地址、提示距离、刷新间隔和动画，并跳转原版按键设置。小镇主页的“客户端设置”也可打开同一页面，不需要 ModMenu。
+
+界面采用石板底纹、暖金像素边框与原版字体。主页集中展示小镇、玩家身份、工程统计和当前世界；窄窗口自动改为纵向排列。协作列表、管理、表单和附近提示卡共用配色与按钮样式。表单使用固定提交栏，可用滚轮或 PageUp／PageDown 浏览，Tab 切换当前可见输入项；关闭 `animationEnabled` 可停用装饰动效。
 
 客户端在 Fabric 的 `CLIENT_STARTED` 事件中初始化界面和头像，等待游戏完成 GUI、选项及皮肤管理器的构造，避免启动入口阶段的空指针崩溃。
 
@@ -84,7 +86,7 @@ npm test
 npm run build
 ```
 
-构建工具下载并核验 Minecraft、Fabric、Xaero 和可选 ModMenu 官方依赖，按固定版本分别编译适配层，再合并为 `build/libs/yetanothertown-1.1.0.jar`。验证包含服务业务与 HTTP 接口测试、客户端配置和地图绑定测试、三个版本的真实原版按键分发回归，以及静态引用和反射接口检查。仅验证客户端改动可运行 `npm run test:client`。
+构建工具下载并核验 Minecraft、Fabric、Xaero 和可选 ModMenu 官方依赖，按固定版本分别编译适配层，再合并为 `build/libs/yetanothertown-1.2.0.jar`。验证包含服务业务与 HTTP 接口测试、客户端配置和地图绑定测试、三个版本的真实原版按键分发回归，以及静态引用和反射接口检查。仅验证客户端改动可运行 `npm run test:client`。
 
 自动化验证不启动 Minecraft，不包含实际游戏画面、输入交互或真实账号登录联调的验证。
 

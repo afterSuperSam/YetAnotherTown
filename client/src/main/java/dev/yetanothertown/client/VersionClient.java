@@ -203,17 +203,15 @@ public final class VersionClient {
     static void drawLogo(GuiGraphicsExtractor graphics, String identifier, int x, int y) {
         if (identifier.startsWith("texture:")) {
             Identifier texture = Identifier.tryParse(identifier.substring("texture:".length()));
-            if (texture != null) { graphics.blit(RenderPipelines.GUI_TEXTURED, texture, x - 12, y, 0, 0, 28, 28, 28, 28); return; }
+            if (texture != null) { graphics.blit(RenderPipelines.GUI_TEXTURED, texture, x, y, 0, 0, 28, 28, 28, 28); return; }
         }
         if (Minecraft.getInstance().level == null) {
-            graphics.fill(x - 10, y, x + 16, y + 26, 0xFF637B4C);
-            graphics.fill(x - 5, y + 7, x + 11, y + 12, TownScreen.ACCENT);
-            graphics.fill(x, y + 12, x + 6, y + 22, TownScreen.ACCENT);
+            TownStyle.icon(graphics, 0, x + 10, y + 10, TownStyle.ACCENT);
             return;
         }
         Identifier id = Identifier.tryParse(identifier);
         var item = id == null ? Items.OAK_SAPLING : BuiltInRegistries.ITEM.getValue(id);
-        graphics.item(new ItemStack(item == null || item == Items.AIR ? Items.OAK_SAPLING : item), x, y);
+        graphics.item(new ItemStack(item == null || item == Items.AIR ? Items.OAK_SAPLING : item), x + 6, y + 6);
     }
 
     static boolean navigate(JsonObject record) {

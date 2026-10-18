@@ -2,10 +2,13 @@ package dev.yetanothertown.client;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.KeyEvent;
 import net.minecraft.network.chat.Component;
 
 import java.util.ArrayList;
@@ -32,8 +35,14 @@ final class TownForm extends Screen {
     private final String initialStatus;
     private final Map<String, String> values = new LinkedHashMap<>();
     private final List<TextLine> labels = new ArrayList<>();
+    private final Map<String, AbstractWidget> fieldWidgets = new LinkedHashMap<>();
+    private final List<Integer> separators = new ArrayList<>();
     private int scroll;
     private int maximumScroll;
+    private int left;
+    private int panelWidth;
+    private int bodyTop;
+    private int bodyBottom;
     private String error = "";
     private boolean submitting;
     private record TextLine(String value, int x, int y, int color) { }
@@ -57,57 +66,79 @@ final class TownForm extends Screen {
     protected void init() { rebuild(); }
 
     private void rebuild() {
+        String focusedKey = fieldWidgets.entrySet().stream().filter(entry -> entry.getValue() == getFocused()).map(Map.Entry::getKey).findFirst().orElse("");
+        clearFocus();
         clearWidgets();
         labels.clear();
-        int left = Math.max(12, (width - 570) / 2);
-        int contentWidth = Math.min(570, width - 24);
-        int y = 48 - scroll;
+        fieldWidgets.clear();
+        separators.clear();
+        panelWidth = Math.min(520, width - 16);
+        left = (width - panelWidth) / 2;
+        bodyTop = 63;
+        bodyBottom = height - 68;
+        int contentLeft = left + 16;
+        int contentWidth = panelWidth - 38;
+        int y = bodyTop + 6 - scroll;
         for (String text : description) {
-            for (String line : TownScreen.wrapText(text, contentWidth - 8, font)) {
-                labels.add(new TextLine(line, left + 4, y, TownScreen.MUTED));
-                y += 12;
+            for (String line : TownScreen.wrapText(text, contentWidth, font)) {
+                labels.add(new TextLine(line, contentLeft, y, TownStyle.MUTED));
+                y += 13;
             }
-            y += 4;
+            y += 7;
         }
+        if (!description.isEmpty() && (!fields.isEmpty() || !actions.isEmpty())) { separators.add(y); y += 14; }
+        int fieldIndex = 0;
         for (Field field : fields) {
-            labels.add(new TextLine(field.label(), left + 4, y, TownScreen.TEXT));
-            int inputY = y + 13;
-            if (inputY >= 45 && inputY + 20 <= height - 54) {
+            labels.add(new TextLine(String.format("%02d", ++fieldIndex), contentLeft, y, TownStyle.ACCENT));
+            labels.add(new TextLine(field.label(), contentLeft + 24, y, TownStyle.TEXT));
+            int inputY = y + 14;
+            if (inputY >= bodyTop && inputY + 20 <= bodyBottom) {
                 if (field.values() == null) {
-                    EditBox input = new EditBox(font, left + 2, inputY, contentWidth - 4, 20, Component.literal(field.label()));
+                    EditBox input = new EditBox(font, contentLeft + 24, inputY, contentWidth - 24, 20, Component.literal(field.label()));
                     input.setMaxLength(2048);
                     input.setValue(values.get(field.key()));
                     input.setResponder(value -> values.put(field.key(), value));
+                    input.setTextColor(TownStyle.TEXT);
+                    input.setTextColorUneditable(TownStyle.MUTED);
+                    input.setEditable(!submitting);
+                    input.active = !submitting;
+                    fieldWidgets.put(field.key(), input);
                     addRenderableWidget(input);
                 } else {
                     String current = values.get(field.key());
                     int index = 0;
                     for (int i = 0; i < field.values().length; i++) if (field.values()[i].equals(current)) index = i;
                     final int selected = index;
-                    addRenderableWidget(Button.builder(Component.literal(field.labels()[selected]), button -> {
+                    Button choice = TownStyle.button(field.labels()[selected] + "  ›", contentLeft + 24, inputY, contentWidth - 24, () -> {
                         values.put(field.key(), field.values()[(selected + 1) % field.values().length]);
                         rebuild();
-                    }).bounds(left + 2, inputY, contentWidth - 4, 20).build());
+                    }, false);
+                    choice.active = !submitting;
+                    fieldWidgets.put(field.key(), choice);
+                    addRenderableWidget(choice);
                 }
             }
-            y += 42;
+            y += 44;
         }
+        if (!fields.isEmpty() && !actions.isEmpty()) { separators.add(y - 3); y += 10; }
         for (Action action : actions) {
-            if (y >= 45 && y + 20 <= height - 54) addRenderableWidget(Button.builder(Component.literal(action.label()), button -> action.run()).bounds(left + 2, y, contentWidth - 4, 20).build());
-            y += 24;
+            if (y >= bodyTop && y + 20 <= bodyBottom) {
+                Button actionButton = TownStyle.button(action.label(), contentLeft, y, contentWidth, action.run(), false);
+                actionButton.active = !submitting;
+                addRenderableWidget(actionButton);
+            }
+            y += 28;
         }
-        maximumScroll = Math.max(0, y + scroll - (height - 58));
-        int bottom = height - 29;
-        int buttonWidth = Math.min(140, (contentWidth - 8) / 2);
-        addRenderableWidget(Button.builder(Component.literal(submit == null ? "返回" : "取消"), button -> onClose()).bounds(left, bottom, buttonWidth, 20).build());
+        maximumScroll = Math.max(0, y + scroll - bodyBottom);
+        if (scroll > maximumScroll) { scroll = maximumScroll; rebuild(); return; }
+        int bottom = height - 38;
+        int buttonWidth = Math.min(128, (contentWidth - 8) / 2);
+        addRenderableWidget(TownStyle.button(submit == null ? "返回" : "取消", contentLeft, bottom, buttonWidth, this::onClose, false));
         if (submit != null) {
-            Button save = addRenderableWidget(Button.builder(Component.literal(submitting ? "正在提交…" : "保存 / 提交"), button -> save()).bounds(left + contentWidth - buttonWidth, bottom, buttonWidth, 20).build());
+            Button save = addRenderableWidget(TownStyle.button(submitting ? "正在提交…" : "确认提交", contentLeft + contentWidth - buttonWidth, bottom, buttonWidth, this::save, true));
             save.active = !submitting;
         }
-        if (maximumScroll > 0) {
-            addRenderableWidget(Button.builder(Component.literal("↑"), button -> moveScroll(-84)).bounds(width - 24, 45, 18, 20).build());
-            addRenderableWidget(Button.builder(Component.literal("↓"), button -> moveScroll(84)).bounds(width - 24, height - 76, 18, 20).build());
-        }
+        if (!submitting && fieldWidgets.containsKey(focusedKey)) setInitialFocus(fieldWidgets.get(focusedKey));
     }
 
     private void save() {
@@ -152,25 +183,47 @@ final class TownForm extends Screen {
         return result;
     }
 
-    private void moveScroll(int amount) { scroll = Math.max(0, Math.min(maximumScroll, scroll + amount)); rebuild(); }
+    private void moveScroll(int amount) {
+        int target = Math.max(0, Math.min(maximumScroll, scroll + amount));
+        if (target != scroll) { scroll = target; rebuild(); }
+    }
     @Override public boolean mouseScrolled(double x, double y, double horizontal, double vertical) { moveScroll((int) (-vertical * 36)); return true; }
+    @Override public boolean keyPressed(KeyEvent event) {
+        if (event.key() == InputConstants.KEY_PAGEUP || event.key() == InputConstants.KEY_PAGEDOWN) {
+            moveScroll((event.key() == InputConstants.KEY_PAGEUP ? -1 : 1) * Math.max(36, bodyBottom - bodyTop - 24));
+            return true;
+        }
+        return super.keyPressed(event);
+    }
     @Override public void onClose() { VersionClient.show(parent); }
     @Override public boolean isPauseScreen() { return false; }
 
     @Override
     public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
-        TownScreen.background(graphics, width, height);
-        graphics.text(font, title, 16, 17, TownScreen.TEXT, true);
-        graphics.enableScissor(0, 43, width - 26, height - 49);
+        TownStyle.background(graphics, width, height);
+        TownStyle.panel(graphics, left, 10, panelWidth, height - 20, true);
+        graphics.text(font, "Yet Another Town", left + 16, 21, TownStyle.ACCENT, false);
+        graphics.text(font, font.plainSubstrByWidth(title.getString(), panelWidth - 38), left + 16, 37, TownStyle.TEXT, true);
+        graphics.fill(left + 1, 56, left + panelWidth - 1, 57, TownStyle.LINE);
+        graphics.fill(left + 1, height - 61, left + panelWidth - 1, height - 60, TownStyle.LINE);
+        graphics.enableScissor(left + 12, bodyTop, left + panelWidth - 12, bodyBottom);
+        for (int y : separators) graphics.fill(left + 16, y, left + panelWidth - 22, y + 1, TownStyle.LINE);
         for (TextLine label : labels) graphics.text(font, label.value(), label.x(), label.y(), label.color(), false);
         graphics.disableScissor();
         super.extractRenderState(graphics, mouseX, mouseY, delta);
-        String feedback = !TownGateway.get().status.equals(initialStatus) ? TownGateway.get().status : "Tab 切换输入项 · 鼠标滚轮浏览 · Esc 返回";
+        String feedback = !TownGateway.get().status.equals(initialStatus) ? TownGateway.get().status : "Tab 切换 · 滚轮 / PageUp / PageDown 浏览";
         String footer = submitting ? "正在提交，请稍候…" : error.isBlank() ? feedback : error;
-        graphics.text(font, font.plainSubstrByWidth(footer, width - 28), 14, height - 44, error.isBlank() ? TownScreen.MUTED : 0xFFFF9988, false);
+        graphics.text(font, font.plainSubstrByWidth(footer, panelWidth - 38), left + 16, height - 52, error.isBlank() ? TownStyle.MUTED : TownStyle.DANGER, false);
+        if (maximumScroll > 0) {
+            int trackHeight = bodyBottom - bodyTop;
+            int handleHeight = Math.max(14, trackHeight * trackHeight / (trackHeight + maximumScroll));
+            int handleY = bodyTop + (trackHeight - handleHeight) * scroll / maximumScroll;
+            graphics.fill(left + panelWidth - 9, bodyTop, left + panelWidth - 7, bodyBottom, TownStyle.LINE);
+            graphics.fill(left + panelWidth - 10, handleY, left + panelWidth - 6, handleY + handleHeight, TownStyle.ACCENT);
+        }
         if (submitting) {
             int phase = TownGateway.get().config().animationEnabled ? (int) (System.nanoTime() / 160_000_000L % 4) : 0;
-            for (int index = 0; index < 4; index++) graphics.fill(width - 49 + index * 8, 16, width - 44 + index * 8, 21, index == phase ? TownScreen.ACCENT : 0xFF55624D);
+            for (int index = 0; index < 4; index++) graphics.fill(left + panelWidth - 49 + index * 8, 23, left + panelWidth - 44 + index * 8, 28, index == phase ? TownStyle.ACCENT : TownStyle.LINE);
         }
     }
 }

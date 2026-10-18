@@ -2,7 +2,6 @@ package dev.yetanothertown.client;
 
 import com.google.gson.JsonObject;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
@@ -13,6 +12,10 @@ public final class TownMapScreen extends Screen {
     private final Screen parent;
     private final Consumer<JsonObject> selected;
     private String information = "正在准备 Xaero 地图…";
+    private int panelLeft;
+    private int panelTop;
+    private int panelWidth;
+    private int panelHeight;
 
     public TownMapScreen(Screen parent) { this(parent, null); }
     public TownMapScreen(Screen parent, Consumer<JsonObject> selected) {
@@ -22,9 +25,13 @@ public final class TownMapScreen extends Screen {
     }
 
     @Override protected void init() {
-        int buttonWidth = Math.min(240, width - 32);
-        addRenderableWidget(Button.builder(Component.literal("打开 Xaero 小镇地图"), button -> open()).bounds((width - buttonWidth) / 2, height / 2 + 10, buttonWidth, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("返回"), button -> onClose()).bounds((width - buttonWidth) / 2, height / 2 + 37, buttonWidth, 20).build());
+        panelWidth = Math.min(420, width - 24);
+        panelHeight = Math.min(244, height - 24);
+        panelLeft = (width - panelWidth) / 2;
+        panelTop = (height - panelHeight) / 2;
+        int buttonWidth = Math.min(250, panelWidth - 40);
+        addRenderableWidget(TownStyle.button("重新打开 Xaero 地图", (width - buttonWidth) / 2, panelTop + panelHeight - 59, buttonWidth, this::open, true));
+        addRenderableWidget(TownStyle.button("返回小镇", (width - buttonWidth) / 2, panelTop + panelHeight - 33, buttonWidth, this::onClose, false));
     }
 
     @Override public void tick() {
@@ -39,10 +46,27 @@ public final class TownMapScreen extends Screen {
     @Override public void onClose() { VersionClient.show(parent); }
     @Override public boolean isPauseScreen() { return false; }
     @Override public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
-        TownScreen.background(graphics, width, height);
-        graphics.text(font, title, 16, 17, TownScreen.TEXT, true);
-        int y = Math.max(55, height / 2 - 42);
-        for (String line : TownScreen.wrapText(information, width - 48, font)) { graphics.centeredText(font, line, width / 2, y, TownScreen.MUTED); y += 14; }
+        TownStyle.background(graphics, width, height);
+        TownStyle.panel(graphics, panelLeft, panelTop, panelWidth, panelHeight, true);
+        boolean compact = panelHeight < 200;
+        if (!compact) {
+            int iconX = width / 2 - 17;
+            int iconY = panelTop + 21;
+            graphics.fill(iconX, iconY + 3, iconX + 11, iconY + 28, TownStyle.LINE);
+            graphics.fill(iconX + 12, iconY, iconX + 23, iconY + 25, TownStyle.ACCENT);
+            graphics.fill(iconX + 24, iconY + 3, iconX + 35, iconY + 28, TownStyle.LINE);
+            graphics.fill(iconX + 3, iconY + 8, iconX + 8, iconY + 9, TownStyle.MUTED);
+            graphics.fill(iconX + 27, iconY + 21, iconX + 32, iconY + 22, TownStyle.MUTED);
+        }
+        int titleY = panelTop + (compact ? 22 : 66);
+        graphics.centeredText(font, font.plainSubstrByWidth(title.getString(), panelWidth - 32), width / 2, titleY, TownStyle.TEXT);
+        int y = titleY + 23;
+        graphics.enableScissor(panelLeft + 16, y, panelLeft + panelWidth - 16, panelTop + panelHeight - 69);
+        for (String line : TownScreen.wrapText(information, panelWidth - 40, font)) {
+            graphics.centeredText(font, line, width / 2, y, TownStyle.MUTED);
+            y += 14;
+        }
+        graphics.disableScissor();
         super.extractRenderState(graphics, mouseX, mouseY, delta);
     }
 }
