@@ -63,6 +63,30 @@ public final class TownInputTest {
         KeyMapping.resetMapping();
         require(mappings[0].isUnbound(), "Vanilla unbound state must be supported");
         require(!VersionClient.repairLegacyKeyMappings(mappings), "Unbound action must not be reset");
+        String[] choices = {"first", "second", "third"};
+        require(TownForm.choiceIndex(choices, "first", -1) == 2, "Reverse selection must wrap to the last option");
+        require(TownForm.choiceIndex(choices, "third", 1) == 0, "Forward selection must wrap to the first option");
+        require(TownForm.choiceIndex(choices, "second", -1) == 0, "Reverse selection must move to the preceding option");
+        require(TownForm.choiceIndex(new String[]{"only"}, "only", -1) == 0, "Single option must remain selected");
+        require(TownForm.choiceIndex(new String[0], "", 1) == -1, "Empty selection must have no option");
+        require(TownForm.parseNumber("坐标", " -2147483648 ") == Integer.MIN_VALUE, "Negative coordinates and surrounding whitespace must be accepted");
+        require(TownForm.parseNumber("数量", "2147483647") == Integer.MAX_VALUE, "Maximum integer must be accepted");
+        for (String invalid : new String[]{"", "1.5", "2147483648"}) {
+            try {
+                TownForm.parseNumber("提示距离（方块）", invalid);
+                throw new AssertionError("Invalid numeric input must be rejected: " + invalid);
+            } catch (NumberFormatException exception) {
+                require(exception.getMessage().equals("提示距离（方块）必须填写有效整数"), "Numeric errors must identify the field");
+            }
+        }
+        var project = TownGateway.object("id", "private-record-id", "name", "中央车站", "purpose", "Rail Hub", "status", "maintenance");
+        require(TownScreen.matchesSearch(project, "DogSam", " 车站 DOGSAM rail "), "Search must combine Chinese text and case-insensitive owner keywords");
+        require(TownScreen.matchesSearch(project, "DogSam", "待维护"), "Search must recognize visible state labels");
+        require(!TownScreen.matchesSearch(project, "DogSam", "车站 仓库"), "Every search keyword must match");
+        require(!TownScreen.matchesSearch(project, "DogSam", "private-record-id"), "Search must not match internal identifiers");
+        require(TownScreen.matchesSearch(TownGateway.object("text", "材料在二楼"), "车站", "二楼 车站"), "Messages must be searchable by content and linked project");
+        project.addProperty("status", "completed");
+        require(TownScreen.matchesSearch(project, "DogSam", " ") && TownScreen.state("completed").isEmpty(), "Clearing search must retain completed projects without a status label");
         System.out.println("TownInput: " + checks + " checks passed through real vanilla dispatch; no game launched");
     }
 }

@@ -7,6 +7,8 @@ import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
@@ -14,6 +16,7 @@ import net.minecraft.network.chat.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Consumer;
 
 import static dev.yetanothertown.client.TownForm.Field.*;
@@ -39,6 +42,10 @@ public final class TownScreen extends Screen {
     private int tab;
     private int section;
     private int page;
+    private EditBox searchInput;
+    private boolean searchChanged;
+    private boolean pendingSearchFocus;
+    private TownGateway.Context listContext;
     private JsonObject previousSnapshot;
     private JsonArray previousTowns;
     private int contentLeft;
@@ -62,10 +69,14 @@ public final class TownScreen extends Screen {
     @Override public boolean isPauseScreen() { return false; }
     @Override public void onClose() { VersionClient.show(parent); }
     @Override public void tick() {
-        if (previousSnapshot != gateway.snapshot || previousTowns != gateway.towns) rebuild();
+        if (searchChanged || previousSnapshot != gateway.snapshot || previousTowns != gateway.towns) rebuild();
     }
 
     private void rebuild() {
+        if (!gateway.context().equals(listContext)) { listContext = gateway.context(); searchInput = null; page = 0; }
+        boolean searchFocused = searchInput != null && (pendingSearchFocus || getFocused() == searchInput);
+        pendingSearchFocus = false;
+        searchChanged = false;
         Button focused = getFocused() instanceof Button button ? button : null;
         clearFocus();
         clearWidgets(); lines.clear(); cards.clear(); panels.clear(); homeButtons.clear();
@@ -81,7 +92,7 @@ public final class TownScreen extends Screen {
         for (int index = 0; index < tabs.length; index++) {
             final int selected = index;
             Button navigation = addRenderableWidget(TownStyle.tab(tabs[index], contentLeft + index * (navigationWidth + 4), window.top() + 25, navigationWidth,
-                    () -> { tab = selected; section = 0; page = 0; rebuild(); }, tab == index));
+                    () -> { tab = selected; section = 0; page = 0; searchInput = null; rebuild(); }, tab == index));
             navigation.active = index == 0 || gateway.loggedIn() && !gateway.townId.isEmpty();
         }
         button("×", window.right() - 28, window.top() + 5, 20, this::onClose);
@@ -102,13 +113,14 @@ public final class TownScreen extends Screen {
                 final int selected = index;
                 int offset = index * (sectionWidth + 4);
                 addRenderableWidget(TownStyle.tab(sections[index], contentLeft + offset, contentTop, index == sections.length - 1 ? contentWidth - offset : sectionWidth,
-                        () -> { section = selected; page = 0; rebuild(); }, section == index));
+                        () -> { section = selected; page = 0; searchInput = null; rebuild(); }, section == index));
             }
             contentTop += 26;
             if (tab == 1) platform(); else management();
         }
         button("刷新资料", window.right() - 76, window.bottom() - 26, 64, () -> { gateway.refreshTowns(); gateway.refresh(); });
         restoreFocus(focused);
+        if (searchFocused && tab == 1) setInitialFocus(searchInput);
     }
 
     private void restoreFocus(Button previous) {
@@ -195,14 +207,41 @@ public final class TownScreen extends Screen {
     }
 
     private void platform() {
-        int actionWidth = (contentWidth - 8) / 2;
+        boolean compact = contentWidth >= 400;
+        int actionWidth = compact ? 100 : (contentWidth - 8) / 2;
         int y = contentTop;
         if (section == 0) button("打开工程地图", contentLeft, y, actionWidth, () -> VersionClient.show(new TownMapScreen(this)));
         else label(font.plainSubstrByWidth("世界：" + worldName(gateway.worldId), actionWidth - 4), contentLeft + 2, y + 6, MUTED);
         Button create = button(section == 0 ? "登记工程" : "留下留言", contentLeft + contentWidth - actionWidth, y, actionWidth, this::createRecord);
         create.active = !gateway.worldId.isEmpty() && has(section == 0 ? "project.create" : "message.create") && !archived();
+        int searchLeft = compact ? contentLeft + actionWidth + 6 : contentLeft;
+        int searchTop = compact ? y : y + 26;
+        int searchWidth = compact ? contentWidth - 2 * (actionWidth + 6) : contentWidth;
+        if (searchInput == null) {
+            searchInput = new EditBox(font, searchLeft, searchTop, searchWidth - 26, 20, Component.literal("搜索"));
+            searchInput.setMaxLength(100);
+            searchInput.setResponder(value -> { page = 0; searchChanged = true; });
+        }
+        searchInput.setX(searchLeft); searchInput.setY(searchTop); searchInput.setWidth(searchWidth - 26);
+        String hint = section == 0 ? "搜索工程、用途、负责人" : "搜索留言、工程、登记人";
+        searchInput.setHint(Component.literal(hint));
+        searchInput.setTooltip(Tooltip.create(Component.literal(hint + "；空格分隔多个关键词")));
+        addRenderableWidget(searchInput);
+        Button clear = button("×", searchLeft + searchWidth - 20, searchTop, 20, () -> { searchInput.setValue(""); pendingSearchFocus = true; });
+        clear.setTooltip(Tooltip.create(Component.literal("清空搜索")));
+        clear.active = !searchInput.getValue().isEmpty();
         String collection = COLLECTIONS[section];
-        list(objects(array(collection)), y + 26, record -> showRecord(collection, record));
+        List<JsonObject> records = objects(array(collection));
+        if (!searchInput.getValue().isBlank()) records.removeIf(record -> !matchesSearch(record, subtitle(record), searchInput.getValue()));
+        list(records, y + (compact ? 26 : 52), record -> showRecord(collection, record));
+    }
+
+    /** 只搜索可读业务文本，多个关键词需全部匹配。 */
+    static boolean matchesSearch(JsonObject record, String related, String query) {
+        if (query.isBlank()) return true;
+        String text = (stringValue(record, "name") + " " + stringValue(record, "text") + " " + stringValue(record, "purpose") + " " + stringValue(record, "notes") + " " + stringValue(record, "dimension") + " " + state(stringValue(record, "status")) + " " + related).toLowerCase(Locale.ROOT);
+        for (String word : query.strip().toLowerCase(Locale.ROOT).split("\\s+")) if (!text.contains(word)) return false;
+        return true;
     }
 
     private void management() {
@@ -242,8 +281,9 @@ public final class TownScreen extends Screen {
         if (records.isEmpty()) {
             int emptyHeight = Math.min(70, contentBottom - top - 24);
             panels.add(new Panel(contentLeft, top, contentWidth, emptyHeight, false));
-            label("还没有记录，新的计划正等待开始。", contentLeft + 12, top + 12, TEXT);
-            if (emptyHeight >= 45) label("使用上方的新建按钮，登记小镇事务。", contentLeft + 12, top + 30, MUTED);
+            boolean searching = tab == 1 && searchInput != null && !searchInput.getValue().isBlank();
+            label(searching ? "没有匹配的记录" : "暂无记录", contentLeft + 12, top + 12, TEXT);
+            if (emptyHeight >= 45 && searching) label("缩短关键词，或清空搜索查看全部。", contentLeft + 12, top + 30, MUTED);
         }
         for (int index = page * available; index < Math.min(records.size(), (page + 1) * available); index++) {
             JsonObject record = records.get(index);
@@ -267,7 +307,11 @@ public final class TownScreen extends Screen {
             next.active = page < pages - 1;
             label((page + 1) + " / " + pages, contentLeft + 36, footer + 6, MUTED);
         }
-        if (archived()) label("历史周目 · 只读", contentLeft + contentWidth - 96, footer + 6, ACCENT);
+        boolean history = tab == 1 && archived();
+        int countOffset = pages > 1 ? 136 : 0;
+        String count = "共 " + records.size() + " 项";
+        if (font.width(count) <= contentWidth - countOffset - (history ? 104 : 0)) label(count, contentLeft + countOffset, footer + 6, MUTED);
+        if (history) label("历史周目 · 只读", contentLeft + contentWidth - 96, footer + 6, ACCENT);
     }
 
     private void createRecord() {
@@ -575,6 +619,7 @@ public final class TownScreen extends Screen {
         double eased = 1 - Math.pow(1 - progress, 3);
         TownStyle.icon(graphics, 0, contentLeft + 1, window.top() + 10, TownStyle.FRAME_TEXT);
         graphics.text(font, font.plainSubstrByWidth(TownStyle.title(), contentWidth - 50), contentLeft + 16 + (int) ((1 - eased) * 4), window.top() + 10, TownStyle.FRAME_TEXT, false);
+        Component hoveredText = null;
         graphics.enableScissor(contentLeft, bodyTop, contentLeft + contentWidth, bodyBottom);
         for (Panel panel : panels) TownStyle.panel(graphics, panel.x(), panel.y(), panel.width(), panel.height(), panel.accented());
         for (Card card : cards) {
@@ -589,8 +634,12 @@ public final class TownScreen extends Screen {
             int textWidth = card.width() - textOffset - buttonSpace;
             int titleY = card.y() + 9;
             int badgeWidth = card.state().isEmpty() ? 0 : Math.min(79, font.width(card.state()) + 12);
-            graphics.text(font, font.plainSubstrByWidth(card.title(), Math.max(0, textWidth - (badgeWidth > 0 ? badgeWidth + 8 : 0))), card.x() + textOffset, titleY, TEXT, true);
+            int titleWidth = Math.max(0, textWidth - (badgeWidth > 0 ? badgeWidth + 8 : 0));
+            graphics.text(font, font.plainSubstrByWidth(card.title(), titleWidth), card.x() + textOffset, titleY, TEXT, true);
             graphics.text(font, font.plainSubstrByWidth(card.subtitle(), Math.max(0, textWidth)), card.x() + textOffset, card.y() + 26, MUTED, false);
+            if ((font.width(card.title()) > titleWidth || font.width(card.subtitle()) > textWidth)
+                    && mouseX >= card.x() + textOffset && mouseX < card.x() + textOffset + textWidth && mouseY >= titleY - 3 && mouseY < card.y() + 38 && mouseY >= bodyTop && mouseY < bodyBottom)
+                hoveredText = Component.literal(card.title() + (card.subtitle().isEmpty() ? "" : "\n" + card.subtitle()));
             if (badgeWidth > 0) {
                 int badgeX = card.x() + card.width() - buttonSpace - badgeWidth;
                 graphics.fill(badgeX, titleY - 3, badgeX + badgeWidth, titleY + 11, TownStyle.RAISED);
@@ -607,6 +656,7 @@ public final class TownScreen extends Screen {
         }
         graphics.disableScissor();
         super.extractRenderState(graphics, mouseX, mouseY, delta);
+        if (hoveredText != null) graphics.setTooltipForNextFrame(hoveredText, mouseX, mouseY);
         if (tab == 0 && maximumHomeScroll > 0) {
             int trackHeight = bodyBottom - bodyTop;
             int scrollbarX = window.right() - 10;

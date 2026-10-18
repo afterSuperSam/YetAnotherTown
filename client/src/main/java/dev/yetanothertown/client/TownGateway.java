@@ -11,15 +11,19 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.Set;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** 管理服务连接、临时会话和已选小镇的资料缓存。 */
@@ -246,8 +250,7 @@ public final class TownGateway {
                 .timeout(Duration.ofSeconds(20)).header("Content-Type", "application/json; charset=utf-8")
                 .POST(HttpRequest.BodyPublishers.ofString(JSON.toJson(object("action", action, "payload", payload))));
         if (!bearer.isEmpty()) builder.header("Authorization", "Bearer " + bearer);
-        return http.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)).thenApply(response -> {
-            if (response.body().length() > 8_000_000) throw new CompletionException(new ServiceException("服务返回的数据过大"));
+        return http.sendAsync(builder.build(), limitedResponseBody()).thenApply(response -> {
             JsonObject envelope;
             try { envelope = JSON.fromJson(response.body(), JsonObject.class); }
             catch (RuntimeException exception) { throw new CompletionException(new ServiceException("服务返回格式错误")); }
@@ -264,6 +267,26 @@ public final class TownGateway {
             if (data != null && data.isJsonObject()) return data.getAsJsonObject();
             return object("items", data == null ? new JsonArray() : data);
         }).exceptionallyCompose(exception -> failed(exception, "连接服务失败，请检查地址和服务状态", revision, selectedRevision));
+    }
+
+    /** 在网络读取阶段限制响应体，避免异常服务无限占用内存。 */
+    private static HttpResponse.BodyHandler<String> limitedResponseBody() {
+        return information -> new HttpResponse.BodySubscriber<>() {
+            private final HttpResponse.BodySubscriber<String> delegate = HttpResponse.BodySubscribers.ofString(StandardCharsets.UTF_8);
+            private Flow.Subscription subscription;
+            private long received;
+            @Override public CompletionStage<String> getBody() { return delegate.getBody(); }
+            @Override public void onSubscribe(Flow.Subscription value) { subscription = value; delegate.onSubscribe(value); }
+            @Override public void onNext(List<ByteBuffer> buffers) {
+                for (ByteBuffer buffer : buffers) received += buffer.remaining();
+                if (received > 8_000_000) {
+                    subscription.cancel();
+                    delegate.onError(new ServiceException("服务返回的数据过大"));
+                } else delegate.onNext(buffers);
+            }
+            @Override public void onError(Throwable error) { delegate.onError(error); }
+            @Override public void onComplete() { delegate.onComplete(); }
+        };
     }
 
     private <T> CompletableFuture<T> failed(Throwable exception, String fallback, long revision) {
@@ -360,6 +383,8 @@ public final class TownGateway {
             URI address;
             try { address = URI.create(endpoint); }
             catch (RuntimeException exception) { throw new IllegalArgumentException("服务地址格式错误"); }
+            if (address.getPort() != -1 && (address.getPort() < 1 || address.getPort() > 65535))
+                throw new IllegalArgumentException("服务端口需在 1～65535 之间");
             boolean local = address.getHost() != null && Set.of("localhost", "127.0.0.1", "::1", "[::1]").contains(address.getHost());
             if (address.getHost() == null || address.getUserInfo() != null || address.getQuery() != null || address.getFragment() != null
                     || (address.getPath() != null && !address.getPath().isEmpty())

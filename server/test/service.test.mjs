@@ -37,6 +37,33 @@ async function fixture(t, config = {}) {
   return { directory, store, service, login, alice, call, townId, worldId, snapshot, project, join, advance: milliseconds => { time += milliseconds; } };
 }
 
+test('只读查询不复制无关小镇，返回资料仍与服务状态隔离', async t => {
+  const f = await fixture(t);
+  let reads = 0;
+  Object.defineProperty(f.service.state, 'unrelated', { enumerable: true, get() { reads++; return {}; } });
+  const listed = await f.call('town.list');
+  listed[0].name = '列表被修改';
+  const snapshot = await f.snapshot();
+  snapshot.town.name = '快照被修改';
+  snapshot.members[0].name = '成员被修改';
+  snapshot.roles[0].permissions.push('invalid');
+  assert.equal(reads, 0);
+  const next = await f.snapshot();
+  assert.equal(next.town.name, '弥生小镇');
+  assert.equal(next.members[0].name, 'Alice');
+  assert.deepEqual(next.roles[0].permissions, []);
+});
+
+test('指定周目快照只报告同周目工程的区块重叠', async t => {
+  const f = await fixture(t);
+  const first = await f.project();
+  const second = await f.project({ name: '同周目重叠' });
+  const otherWorld = await f.call('world.create', { townId: f.townId, name: '新周目' });
+  await f.project({ worldId: otherWorld.id, name: '其他周目重叠' });
+  const snapshot = await f.call('town.snapshot', { townId: f.townId, worldId: f.worldId });
+  assert.deepEqual(snapshot.projects.map(project => [project.id, project.overlapIds]), [[first.id, [second.id]], [second.id, [first.id]]]);
+});
+
 test('配置拒绝未知项、非法范围和相互冲突的提示距离', () => {
   assert.equal(validateConfig().port, 37841);
   const migrated = validateConfig({ challengeSeconds: 90, port: 37842 });
@@ -322,7 +349,7 @@ test('HTTP 封装、请求格式、认证、请求大小及真实接口交互', 
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const endpoint = `http://127.0.0.1:${server.address().port}`;
   const request = (body, headers = {}) => fetch(`${endpoint}/api`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body });
-  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.4');
+  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.5');
   assert.equal((await request('{broken')).status, 400);
   assert.equal((await request('[]')).status, 400);
   assert.equal((await request(JSON.stringify({ action: 'town.list' }))).status, 401);

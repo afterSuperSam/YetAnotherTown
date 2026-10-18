@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "yetanothertown",
-  "version": "1.0.0-alpha.4",
+  "version": "1.0.0-alpha.5",
   "name": "YetAnotherTown",
   "description": "小镇工程登记、空间留言与维护报修平台",
   "authors": ["Sam"],

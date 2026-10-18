@@ -51,6 +51,9 @@ final class TownForm extends Screen {
     private TownStyle.Window window;
     private String error = "";
     private boolean submitting;
+    private boolean discardConfirmation;
+    private int returningFocusIndex = -1;
+    private AbstractWidget pendingFocus;
     private record TextLine(String value, int x, int y, int color) { }
 
     TownForm(Screen parent, String title, List<Field> fields, Consumer<JsonObject> submit) {
@@ -70,7 +73,11 @@ final class TownForm extends Screen {
     }
 
     @Override
-    protected void init() { rebuild(); }
+    protected void init() {
+        rebuild();
+        if (returningFocusIndex >= 0 && returningFocusIndex < focusOrder.size()) focusControl(focusOrder.get(returningFocusIndex));
+        returningFocusIndex = -1;
+    }
 
     private void rebuild() {
         int focusedIndex = focusOrder.indexOf(getFocused());
@@ -111,11 +118,11 @@ final class TownForm extends Screen {
             int halfWidth = (contentWidth - 8) / 2;
             boolean pair = index + 1 < actions.size() && font.width(action.label()) <= halfWidth - 12 && font.width(actions.get(index + 1).label()) <= halfWidth - 12;
             int actionWidth = pair ? halfWidth : contentWidth;
-            Button actionButton = TownStyle.button(action.label(), contentLeft, y, actionWidth, () -> { if (validContext()) action.run().run(); });
+            Button actionButton = TownStyle.button(action.label(), contentLeft, y, actionWidth, () -> { if (!submitting && validContext()) action.run().run(); });
             actionButton.active = !submitting; addContentWidget(actionButton);
             if (pair) {
                 Action next = actions.get(index + 1);
-                Button nextButton = TownStyle.button(next.label(), contentLeft + actionWidth + 8, y, contentWidth - actionWidth - 8, () -> { if (validContext()) next.run().run(); });
+                Button nextButton = TownStyle.button(next.label(), contentLeft + actionWidth + 8, y, contentWidth - actionWidth - 8, () -> { if (!submitting && validContext()) next.run().run(); });
                 nextButton.active = !submitting; addContentWidget(nextButton);
             }
             index += pair ? 2 : 1;
@@ -125,9 +132,10 @@ final class TownForm extends Screen {
         if (scroll > maximumScroll) { scroll = maximumScroll; rebuild(); return; }
         int bottom = window.bottom() - 29;
         int buttonWidth = Math.min(128, (contentWidth - 8) / 2);
-        addControl(TownStyle.button(submit == null ? "返回" : "取消", contentLeft, bottom, buttonWidth, this::onClose));
+        Button cancel = addControl(TownStyle.button(discardConfirmation ? "继续编辑" : submit == null ? "返回" : "取消", contentLeft, bottom, buttonWidth, this::onClose));
+        cancel.active = !submitting;
         if (submit != null) {
-            Button save = addControl(TownStyle.button(submitting ? "正在提交…" : "确认提交", contentLeft + contentWidth - buttonWidth, bottom, buttonWidth, this::save));
+            Button save = addControl(TownStyle.button(submitting ? "正在提交…" : discardConfirmation ? "放弃修改" : "确认提交", contentLeft + contentWidth - buttonWidth, bottom, buttonWidth, this::save));
             save.active = !submitting;
         }
         if (focusedIndex >= 0 && focusedIndex < focusOrder.size()) {
@@ -153,18 +161,43 @@ final class TownForm extends Screen {
             input.setEditable(!submitting); input.active = !submitting;
             fieldWidgets.put(field.key(), input); addContentWidget(input);
         } else {
-            int index = 0;
-            for (int option = 0; option < field.values().length; option++) if (field.values()[option].equals(values.get(field.key()))) index = option;
-            Button choice = TownStyle.button(field.labels()[index], x, inputY, width, () -> {
-                int selected = 0;
-                for (int option = 0; option < field.values().length; option++) if (field.values()[option].equals(values.get(field.key()))) selected = option;
-                int next = (selected + 1) % field.values().length;
-                values.put(field.key(), field.values()[next]);
-                fieldWidgets.get(field.key()).setMessage(Component.literal(field.labels()[next]));
-            });
-            choice.setTooltip(font.width(field.label()) > width ? Tooltip.create(Component.literal(field.label())) : null);
-            choice.active = !submitting; fieldWidgets.put(field.key(), choice); addContentWidget(choice);
+            int index = choiceIndex(field.values(), values.get(field.key()), 0);
+            Button choice = TownStyle.button(choiceLabel(field, index), x, inputY, width, () -> cycleChoice(field, 1));
+            choice.setTooltip(choiceTooltip(field, index));
+            choice.active = !submitting && field.values().length > 1; fieldWidgets.put(field.key(), choice); addContentWidget(choice);
         }
+    }
+
+    static int choiceIndex(String[] options, String selected, int direction) {
+        if (options.length == 0) return -1;
+        int index = 0;
+        for (int option = 0; option < options.length; option++) if (options[option].equals(selected)) index = option;
+        return Math.floorMod(index + direction, options.length);
+    }
+
+    private String choiceLabel(Field field, int index) {
+        if (index < 0) return "暂无可选项";
+        return field.labels() != null && index < field.labels().length ? field.labels()[index] : field.values()[index];
+    }
+
+    private Tooltip choiceTooltip(Field field, int index) {
+        String hint = field.label() + "：" + choiceLabel(field, index);
+        if (field.values().length > 1) hint += "（" + (index + 1) + "/" + field.values().length + "）\n单击下一项 · Shift + 左键上一项\n聚焦后可用 ← / → 选择";
+        return Tooltip.create(Component.literal(hint));
+    }
+
+    private void cycleChoice(Field field, int direction) {
+        if (submitting || field.values().length < 2) return;
+        int index = choiceIndex(field.values(), values.get(field.key()), direction);
+        values.put(field.key(), field.values()[index]);
+        AbstractWidget widget = fieldWidgets.get(field.key());
+        widget.setMessage(Component.literal(choiceLabel(field, index)));
+        widget.setTooltip(choiceTooltip(field, index));
+    }
+
+    static int parseNumber(String label, String value) {
+        try { return Integer.parseInt(value.strip()); }
+        catch (NumberFormatException exception) { throw new NumberFormatException(label + "必须填写有效整数"); }
     }
 
     private <T extends AbstractWidget> T addControl(T widget) {
@@ -189,22 +222,25 @@ final class TownForm extends Screen {
     }
 
     private void save() {
-        if (submitting || !validContext()) return;
+        if (submitting || !discardConfirmation && !validContext()) return;
         JsonObject payload = new JsonObject();
+        for (Field field : fields) {
+            String value = values.get(field.key()).strip();
+            if (field.number()) {
+                try { payload.addProperty(field.key(), parseNumber(field.label(), value)); }
+                catch (NumberFormatException exception) {
+                    error = exception.getMessage();
+                    pendingFocus = fieldWidgets.get(field.key());
+                    return;
+                }
+            } else if (field.values() != null && (value.equals("true") || value.equals("false"))) payload.addProperty(field.key(), Boolean.parseBoolean(value));
+            else payload.addProperty(field.key(), value);
+        }
         try {
-            for (Field field : fields) {
-                String value = values.get(field.key()).strip();
-                if (field.number()) payload.addProperty(field.key(), Integer.parseInt(value));
-                else if (field.values() != null && (value.equals("true") || value.equals("false"))) payload.addProperty(field.key(), Boolean.parseBoolean(value));
-                else payload.addProperty(field.key(), value);
-            }
             error = "";
             submitting = true;
             rebuild();
             submit.accept(payload);
-        } catch (NumberFormatException exception) {
-            submitting = false;
-            error = "坐标和数量必须填写有效整数";
         } catch (IllegalArgumentException exception) {
             submitting = false;
             error = exception.getMessage();
@@ -223,9 +259,12 @@ final class TownForm extends Screen {
 
     static void track(CompletableFuture<?> request) {
         if (!(VersionClient.currentScreen() instanceof TownForm form)) return;
+        form.submitting = true;
+        form.error = "";
+        form.rebuild();
         request.whenComplete((ignored, failure) -> net.minecraft.client.Minecraft.getInstance().execute(() -> {
             form.submitting = false;
-            if (failure != null) form.error = TownGateway.get().status;
+            if (form.validContext() && failure != null) form.error = TownGateway.get().status;
             if (VersionClient.currentScreen() == form) form.rebuild();
         }));
     }
@@ -250,11 +289,26 @@ final class TownForm extends Screen {
         return true;
     }
     @Override public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+        if (event.button() == InputConstants.MOUSE_BUTTON_LEFT && event.hasShiftDown()) {
+            for (Field field : fields) {
+                AbstractWidget widget = fieldWidgets.get(field.key());
+                if (field.values() != null && widget.active && widget.visible && widget.isMouseOver(event.x(), event.y())) {
+                    cycleChoice(field, -1); focusControl(widget); return true;
+                }
+            }
+        }
         boolean handled = super.mouseClicked(event, doubleClick);
         if (getFocused() != null && !children().contains(getFocused())) clearFocus();
+        applyPendingFocus();
         return handled;
     }
     @Override public boolean keyPressed(KeyEvent event) {
+        if (submitting && event.key() == InputConstants.KEY_ESCAPE) return true;
+        if (event.key() == InputConstants.KEY_LEFT || event.key() == InputConstants.KEY_RIGHT) {
+            for (Field field : fields) if (field.values() != null && fieldWidgets.get(field.key()) == getFocused()) {
+                cycleChoice(field, event.key() == InputConstants.KEY_LEFT ? -1 : 1); return true;
+            }
+        }
         if (event.isCycleFocus()) {
             int direction = event.hasShiftDown() ? -1 : 1;
             int index = focusOrder.indexOf(getFocused());
@@ -270,9 +324,25 @@ final class TownForm extends Screen {
             moveScroll((event.key() == InputConstants.KEY_PAGEUP ? -1 : 1) * Math.max(36, bodyBottom - bodyTop - 24));
             return true;
         }
-        return super.keyPressed(event);
+        boolean handled = super.keyPressed(event);
+        applyPendingFocus();
+        return handled;
     }
-    @Override public void onClose() { VersionClient.show(parent); }
+
+    private void applyPendingFocus() {
+        if (pendingFocus == null) return;
+        focusControl(pendingFocus);
+        pendingFocus = null;
+    }
+    @Override public void onClose() {
+        if (submitting) return;
+        if (submit != null && fields.stream().anyMatch(field -> !field.initial().equals(values.get(field.key())))) {
+            returningFocusIndex = focusOrder.indexOf(getFocused());
+            TownForm confirmation = new TownForm(this, "放弃未提交的修改", List.of(), List.of("输入尚未提交，放弃后将丢失本次修改。"), List.of(), ignored -> VersionClient.show(parent));
+            confirmation.discardConfirmation = true;
+            VersionClient.show(confirmation);
+        } else VersionClient.show(parent);
+    }
     @Override public boolean isPauseScreen() { return false; }
 
     @Override

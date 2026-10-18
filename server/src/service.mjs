@@ -168,7 +168,7 @@ export class TownService {
   async execute(action, payload, token) {
     check(typeof action === 'string' && object(payload), 'invalid_argument', '请求格式无效');
     const now = this.now();
-    const state = clone(this.state);
+    const state = ['town.list', 'town.snapshot'].includes(action) ? this.state : clone(this.state);
     let result;
     let mutated = false;
     if (action === 'auth.login') {
@@ -291,7 +291,7 @@ export class TownService {
       const result = { town: publicTown(town), currentMember, roles: town.roles, members: town.members, worlds: town.worlds, permissions, permissionCatalog: Object.entries(PERMISSIONS).map(([id, name]) => ({ id, name })) };
       result.limits = { defaultProximityRadius: config.defaultProximityRadius, maximumProximityRadius: config.maximumProximityRadius, maximumRegionChunks: config.maximumRegionChunks };
       for (const key of ['projects', 'messages', 'tickets']) result[key] = town[key].filter(item => !payload.worldId || item.worldId === payload.worldId);
-      result.projects = result.projects.map(project => ({ ...project, overlapIds: town.projects.filter(other => other.id !== project.id && other.worldId === project.worldId && other.dimension === project.dimension && project.chunks.minX <= other.chunks.maxX && project.chunks.maxX >= other.chunks.minX && project.chunks.minZ <= other.chunks.maxZ && project.chunks.maxZ >= other.chunks.minZ).map(other => other.id) }));
+      result.projects = result.projects.map(project => ({ ...project, overlapIds: result.projects.filter(other => other.id !== project.id && other.worldId === project.worldId && other.dimension === project.dimension && project.chunks.minX <= other.chunks.maxX && project.chunks.maxX >= other.chunks.minX && project.chunks.minZ <= other.chunks.maxZ && project.chunks.maxZ >= other.chunks.minZ).map(other => other.id) }));
       return done(result, false);
     }
     if (action === 'town.update') {

@@ -32,7 +32,7 @@ public final class TownGatewayTest {
         require(!gateway.needsKeyMigration(), "native key migration marker survives reload");
         String migratedConfiguration = Files.readString(directory.resolve("yetanothertown.json"));
         require(!migratedConfiguration.contains("openKey") && !migratedConfiguration.contains("nearbyKey"), "numeric bindings no longer override native options");
-        for (String invalid : new String[]{"http://example.com", "ftp://localhost", "https://example.com/api", "http://", "https://name:secret@example.com"}) {
+        for (String invalid : new String[]{"http://example.com", "ftp://localhost", "https://example.com/api", "http://", "https://name:secret@example.com", "https://example.com:0", "https://example.com:65536"}) {
             boolean rejected = false;
             try { gateway.configure(invalid); } catch (IllegalArgumentException exception) { rejected = true; }
             require(rejected, "unsafe or malformed endpoint rejected: " + invalid);
@@ -46,6 +46,7 @@ public final class TownGatewayTest {
         CountDownLatch revoked = new CountDownLatch(1);
         CountDownLatch loginStarted = new CountDownLatch(1);
         CountDownLatch loginRelease = new CountDownLatch(1);
+        CountDownLatch oversizedRelease = new CountDownLatch(1);
         AtomicReference<JsonObject> claimedIdentity = new AtomicReference<>();
         var executor = Executors.newVirtualThreadPerTaskExecutor();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -88,6 +89,18 @@ public final class TownGatewayTest {
                 case "denied" -> { status = 403; body = "{\"ok\":false,\"error\":{\"code\":\"FORBIDDEN\",\"message\":\"没有操作权限\"}}"; }
                 case "expired" -> { status = 401; body = "{\"ok\":false,\"error\":{\"code\":\"unauthenticated\",\"message\":\"登录已过期\"}}"; }
                 case "malformed" -> body = "not JSON";
+                case "oversized" -> {
+                    exchange.sendResponseHeaders(200, 0);
+                    try {
+                        exchange.getResponseBody().write("x".repeat(8_000_001).getBytes(StandardCharsets.UTF_8));
+                        exchange.getResponseBody().flush();
+                        oversizedRelease.await(10, TimeUnit.SECONDS);
+                    } catch (java.io.IOException exception) {
+                        // 客户端达到上限后主动终止读取。
+                    } catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
+                    finally { exchange.close(); }
+                    return;
+                }
                 default -> body = "{\"ok\":true,\"data\":{}}";
             }
             byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
@@ -143,6 +156,10 @@ public final class TownGatewayTest {
             require(gateway.status.equals("没有操作权限"), "service errors remain Chinese");
             gateway.request("malformed", TownGateway.object()).handle((value, error) -> null).join();
             require(gateway.status.equals("服务返回格式错误"), "invalid protocol explicitly classified");
+            gateway.request("oversized", TownGateway.object()).handle((value, error) -> null).get(5, TimeUnit.SECONDS);
+            require(gateway.status.equals("服务返回的数据过大"), "oversized response rejected during network reading");
+            oversizedRelease.countDown();
+            gateway.request("noop", TownGateway.object()).get(5, TimeUnit.SECONDS);
             gateway.selectTown("slow");
             require(slowStarted.await(5, TimeUnit.SECONDS), "old response is in flight");
             TownGateway.Context previousSelection = gateway.context();
@@ -183,6 +200,7 @@ public final class TownGatewayTest {
             refreshRelease.countDown();
             loginRelease.countDown();
             server.stop(0);
+            oversizedRelease.countDown();
             executor.close();
         }
         System.out.println("TownGateway: " + checks + " checks passed (no game launched)");
