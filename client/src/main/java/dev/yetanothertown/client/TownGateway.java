@@ -39,6 +39,8 @@ public final class TownGateway {
     private volatile JsonObject player = new JsonObject();
     private volatile ClientConfig configuration = new ClientConfig();
     private Path configurationPath;
+    private boolean configurationWritable = true;
+    public volatile String configurationNotice = "";
     public volatile JsonObject snapshot = new JsonObject();
     public volatile JsonArray towns = new JsonArray();
     public volatile String status = "进入世界后自动读取游戏身份并连接小镇服务";
@@ -65,8 +67,11 @@ public final class TownGateway {
 
     public synchronized void initialize(Path directory) {
         configurationPath = directory.resolve("yetanothertown.json");
+        configuration = new ClientConfig();
+        configurationWritable = true;
+        configurationNotice = "";
         try {
-            if (Files.exists(configurationPath)) {
+            if (!Files.notExists(configurationPath)) {
                 JsonObject parsed = JSON.fromJson(Files.readString(configurationPath), JsonObject.class);
                 if (parsed == null) throw new IllegalArgumentException("客户端配置不能为空");
                 Set<String> allowed = Set.of("endpoint", "entrySubtitleSeconds", "entryCooldownSeconds", "projectOverlayEnabled", "pollIntervalSeconds", "animationEnabled", "mapBindings");
@@ -97,11 +102,26 @@ public final class TownGateway {
             } else {
                 save();
             }
-        } catch (IOException | RuntimeException exception) {
-            status = "客户端配置无效：" + exception.getMessage();
-            LOGGER.log(System.Logger.Level.ERROR, "Failed to load client configuration", exception);
-            throw new IllegalStateException(status, exception);
+        } catch (com.google.gson.JsonParseException | IllegalArgumentException exception) {
+            LOGGER.log(System.Logger.Level.WARNING, "Invalid client configuration; resetting after backup", exception);
+            Path backup = configurationPath.resolveSibling("yetanothertown.invalid-" + java.util.UUID.randomUUID() + ".json");
+            try {
+                Files.copy(configurationPath, backup);
+                save();
+                configurationNotice = "旧版或损坏配置已备份为 " + backup.getFileName() + "，当前使用全新默认设置，请重新设置服务地址和地图绑定。";
+                status = configurationNotice;
+            } catch (IOException failure) { configurationUnavailable(failure); }
+        } catch (IOException exception) {
+            configurationUnavailable(exception);
         }
+    }
+
+    /** 读写失败时保留原文件，禁止后续设置保存覆盖未经读取的配置。 */
+    private void configurationUnavailable(IOException exception) {
+        configurationWritable = false;
+        configurationNotice = "无法读取或保存客户端配置，原文件已保留。请检查 config/yetanothertown.json 的文件权限后重启游戏。";
+        status = configurationNotice;
+        LOGGER.log(System.Logger.Level.ERROR, "Client configuration unavailable; writes disabled", exception);
     }
 
     public synchronized void configure(String endpoint) {
@@ -125,6 +145,7 @@ public final class TownGateway {
             configuration = previous;
             throw new IllegalStateException("保存客户端配置失败", exception);
         }
+        configurationNotice = "";
         if (!previous.endpoint.equals(replacement.endpoint)) {
             clearSession("服务地址已更新，将使用当前游戏身份重新连接");
             revoke(previous.endpoint, previousToken);
@@ -195,6 +216,7 @@ public final class TownGateway {
     }
 
     private void save() throws IOException {
+        if (!configurationWritable) throw new IOException("Client configuration is protected after an I/O failure");
         configuration.validate();
         if (configurationPath == null) return;
         Files.createDirectories(configurationPath.getParent());

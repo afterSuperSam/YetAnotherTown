@@ -116,7 +116,7 @@ public final class VersionClient {
                 TownForm.Field.toggle("animationEnabled", "界面动画", settings.animationEnabled),
                 TownForm.Field.toggle("projectOverlayEnabled", "在 Xaero 地图显示项目", settings.projectOverlayEnabled),
                 TownForm.Field.action("keyBindings", "打开原版按键绑定", () -> show(new KeyBindsScreen(currentScreen(), Minecraft.getInstance().options)))),
-                List.of(), List.of(),
+                gateway.configurationNotice.isEmpty() ? List.of() : List.of(gateway.configurationNotice), List.of(),
                 values -> {
                     gateway.configure(values.get("endpoint").getAsString(), values.get("entrySubtitleSeconds").getAsInt(), values.get("entryCooldownSeconds").getAsInt(),
                             values.get("pollIntervalSeconds").getAsInt(), values.get("animationEnabled").getAsBoolean(), values.get("projectOverlayEnabled").getAsBoolean());

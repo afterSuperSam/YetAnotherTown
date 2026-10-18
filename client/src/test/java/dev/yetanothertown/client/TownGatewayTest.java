@@ -21,6 +21,32 @@ public final class TownGatewayTest {
     }
     public static void main(String[] arguments) throws Exception {
         TownGateway gateway = TownGateway.INSTANCE;
+        for (String invalid : new String[]{"{\"keyBindingsVersion\":1,\"endpoint\":\"https://old.example.test\"}", "{", "null", "[]", "{\"pollIntervalSeconds\":0}"}) {
+            var brokenDirectory = Files.createTempDirectory("yat-invalid-config-");
+            var original = brokenDirectory.resolve("yetanothertown.json");
+            Files.writeString(original, invalid);
+            gateway.initialize(brokenDirectory);
+            require(gateway.config().endpoint.equals("http://127.0.0.1:37841"), "invalid configuration starts with fresh defaults without crashing");
+            require(gateway.configurationNotice.contains("已备份"), "recovery notice remains available in client settings");
+            try (var files = Files.list(brokenDirectory)) {
+                var backups = files.filter(file -> file.getFileName().toString().startsWith("yetanothertown.invalid-")).toList();
+                require(backups.size() == 1 && Files.readString(backups.getFirst()).equals(invalid), "invalid configuration preserved exactly before reset");
+            }
+            require(!Files.readString(original).contains("keyBindingsVersion"), "obsolete fields are not migrated");
+            gateway.configure("https://new.example.test");
+            require(gateway.configurationNotice.isEmpty(), "saving settings acknowledges configuration recovery");
+            gateway.initialize(brokenDirectory);
+            require(gateway.config().endpoint.equals("https://new.example.test"), "configuration remains editable after recovery");
+        }
+        var unreadableDirectory = Files.createTempDirectory("yat-unreadable-config-");
+        var occupiedPath = Files.createDirectory(unreadableDirectory.resolve("yetanothertown.json"));
+        Files.writeString(occupiedPath.resolve("sentinel"), "preserve");
+        gateway.initialize(unreadableDirectory);
+        require(gateway.configurationNotice.contains("文件权限"), "configuration I/O failure is visible without crashing startup");
+        boolean protectedFile = false;
+        try { gateway.configure("https://new.example.test"); } catch (IllegalStateException exception) { protectedFile = true; }
+        require(protectedFile, "saving cannot overwrite unreadable configuration");
+        require(Files.readString(occupiedPath.resolve("sentinel")).equals("preserve"), "unreadable original remains untouched");
         var directory = Files.createTempDirectory("yat-gateway-test-");
         gateway.initialize(directory);
         require(Files.exists(directory.resolve("yetanothertown.json")), "default configuration saved");
