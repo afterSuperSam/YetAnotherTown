@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "yetanothertown",
-  "version": "1.0.0-alpha.14",
+  "version": "1.0.0-alpha.15",
   "name": "Yet Another Town",
   "description": "Xaero 原生地图项目登记、区域介绍与维护报修",
   "mixins": ["yetanothertown.mixins.json"],

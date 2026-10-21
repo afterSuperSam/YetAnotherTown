@@ -34,7 +34,6 @@ public final class TownScreen extends Screen {
     private final Screen parent;
     private Screen returnScreen;
     private boolean externalParent;
-    private final long openedAt = System.nanoTime();
     private final List<Line> lines = new ArrayList<>();
     private final List<Card> cards = new ArrayList<>();
     private final List<Panel> panels = new ArrayList<>();
@@ -189,11 +188,11 @@ public final class TownScreen extends Screen {
         int navigationWidth = Math.min(86, (contentWidth - 8) / 3);
         for (int index = 0; index < tabs.length; index++) {
             final int selected = index;
-            Button navigation = addRenderableWidget(TownStyle.tab(tabs[index], contentLeft + index * (navigationWidth + 4), window.top() + 25, navigationWidth,
+            Button navigation = addRenderableWidget(TownStyle.tab(tabs[index], contentLeft - 6 + index * (navigationWidth + 4), window.top() + 25, navigationWidth,
                     () -> { tab = selected; section = 0; page = 0; searchInput = null; rebuild(); }, tab == index));
             navigation.active = index == 0 || gateway.loggedIn() && !gateway.townId.isEmpty();
         }
-        button("×", window.right() - 28, window.top() + 5, 20, this::onClose);
+        button("×", window.right() - 26, window.top() + 5, 20, this::onClose);
         contentTop = bodyTop + 6;
         if (tab == 0) {
             homeContent = true; home(); homeContent = false;
@@ -217,7 +216,7 @@ public final class TownScreen extends Screen {
             contentTop += 26;
             management();
         }
-        button("刷新资料", contentLeft + contentWidth - 64, window.bottom() - 26, 64, () -> { gateway.refreshTowns(); gateway.refresh(); });
+        button("刷新资料", contentLeft + contentWidth - 58, window.bottom() - 26, 64, () -> { gateway.refreshTowns(); gateway.refresh(); });
         restoreFocus(focused);
         if (searchFocused && tab == 1) setInitialFocus(searchInput);
         if (focusedSetting != null && tab == 2 && section == 3 && children().contains(townInputs.get(focusedSetting)) && townInputs.get(focusedSetting).visible) setInitialFocus(townInputs.get(focusedSetting));
@@ -824,9 +823,7 @@ public final class TownScreen extends Screen {
     @Override public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
         background(graphics, width, height);
         TownStyle.window(graphics, window, bodyTop, bodyBottom);
-        double progress = gateway.config().animationEnabled ? Math.min(1, (System.nanoTime() - openedAt) / 260_000_000d) : 1;
-        double eased = 1 - Math.pow(1 - progress, 3);
-        int headingX = contentLeft + (int) ((1 - eased) * 4);
+        int headingX = contentLeft - 6;
         TownStyle.icon(graphics, 0, headingX, window.top() + 11, TownStyle.FRAME_TEXT);
         graphics.text(font, font.plainSubstrByWidth(TownStyle.title(), contentWidth - 50), headingX + 14, window.top() + 10, TownStyle.FRAME_TEXT, false);
         Component hoveredText = null;
