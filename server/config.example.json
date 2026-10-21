@@ -1,0 +1,18 @@
+{
+  "host": "127.0.0.1",
+  "port": 37841,
+  "dataFile": "./data/yetanothertown.json",
+  "sessionHours": 168,
+  "requestTimeoutSeconds": 15,
+  "maxBodyBytes": 65536,
+  "requestsPerMinute": 120,
+  "authenticationAttemptsPerMinute": 10,
+  "maximumRegionChunks": 65536,
+  "maximumPendingRequests": 64,
+  "maximumSessions": 10000,
+  "maximumSessionsPerPlayer": 8,
+  "maximumTowns": 1000,
+  "maximumTownRecords": 10000,
+  "maximumRateLimitEntries": 10000,
+  "maximumTownBytes": 7340032
+}

@@ -1,101 +1,50 @@
 # Yet Another Town
 
-Fabric 客户端小镇协作模组：直接在 Xaero 大地图上登记项目、查看设施说明、导航和报修。
+A Fabric mod for organizing your Minecraft town directly on Xaero’s World Map.
 
-当前版本 **v1.0.0beta**，元数据版本 `1.0.0-beta`。公开仓库仅包含客户端；外置小镇服务单独维护，不包含在 JAR 或本仓库中。
+Mark building projects, find shared facilities, read usage instructions and report repairs — without leaving the game.
 
-## 架构
+[Download the Beta](https://github.com/afterSuperSam/YetAnotherTown/releases/tag/v1.0.0beta) · [All releases](https://github.com/afterSuperSam/YetAnotherTown/releases) · [Report an issue](https://github.com/afterSuperSam/YetAnotherTown/issues)
 
-- `bootstrap/`：Fabric、Mod Menu 入口与 Xaero 地图 Mixin。
-- `client/`：游戏界面、身份连接、项目与权限操作、区域提示。
-- `compat/`：Xaero 地图、项目高亮、悬浮卡与导航；依赖版本与哈希见 `dependencies.lock.json`。
-- `tools/`：三版本适配层编译、字节码契约检查和单 JAR 打包。
-- 外置服务同步小镇、项目与维修资料；Xaero 地形始终保留在每位玩家本地，不上传或共享底图。
-- 领域说明见 [CONTEXT.md](CONTEXT.md)。
+## Features
 
-## 安装与使用
+- Select chunks on the map to create a project.
+- Hover over projects to see their owner, status and description.
+- Search by name or filter by project type.
+- Navigate to projects and report or complete repairs.
+- Manage town members, permissions and past worlds.
+- English and Simplified Chinese, following your game language.
 
-安装本模组、Fabric API、Xaero’s World Map 和 Xaero’s Minimap。选择对应 Minecraft 版本的前置；Mod Menu 可选。
+## Install
 
-| Minecraft | Fabric Loader | Fabric API | World Map | Minimap |
-| --- | --- | --- | --- | --- |
-| 26.3 | 0.19.5 | 0.161.0、0.162.0、0.163.0（均为 +26.3） | 1.46.3、1.46.4、1.47.0 | 26.5.2、26.5.3、26.6.0 |
-| 26.2 | 0.19.5 | 0.159.0、0.160.0、0.161.0（均为 +26.2） | 1.46.0、1.46.1、1.47.0 | 26.5.0、26.5.1、26.6.0 |
-| 26.1.2 | 0.19.5 | 0.155.0、0.155.2、0.155.3（均为 +26.1.2） | 1.45.0、1.46.0、1.47.0 | 26.4.2、26.5.0、26.6.0 |
+One JAR supports **Minecraft 26.1.2, 26.2 and 26.3** with Fabric.
 
-表内共 81 组 API / World Map / Minimap 组合经过字节码与接口检查。Loader 验证基线为 0.19.5；元数据允许 0.19.3+，但 0.19.3、0.19.4 未取得实机或完整依赖验证。未列出的游戏版本、前置更新与快照不作兼容承诺。编译与静态契约检查不等于实机联调。
+Install **Fabric Loader 0.19.5**, **Fabric API**, **Xaero’s World Map** and **Xaero’s Minimap** for your Minecraft version, then put the Yet Another Town JAR in your `mods` folder. **Mod Menu** is optional.
 
-1. 向镇长取得外置小镇服务地址，在“客户端设置”填写；远程服务使用 HTTPS。
-2. 按 **K** 打开小镇界面，创建小镇或输入八位 ID 加入；目录只列出管理开启展示的小镇。新人只读，由管理分配权限。
-3. 镇长在当前游戏世界打开 **M** 地图，进入“小镇地图设置”，点击“使用我所在的地图”。成员按服务器地址与地图名自动匹配，各维度分别显示项目。
-4. 在 Xaero 原生地图右键拖选区块并创建项目，只填名称、类型、简介、状态；负责人取当前玩家身份。
-5. 悬停项目查看资料；进入项目显示短暂提示，按 **X** 查看详情。
+**An external town service is required.** Ask your town administrator for its address and enter it in Client Settings. The Minecraft server itself does not need this mod.
 
-按键可在原版设置的 Yet Another Town 分类中修改。Mod Menu 和主页的“客户端设置”打开相同配置界面。
+## Get started
 
-### 项目与小镇操作
+1. Press **K** to open the town menu. Join a listed town, enter a town ID, or create your own.
+2. The mayor opens **Town map settings** and selects **Use my current map**. Members match automatically when using the same server address and map name.
+3. Press **M** to open Xaero’s map. Hover over a project for details, or right-click and drag to select chunks for a new project.
+4. Press **X** when inside a project to open its details.
 
-- 主页显示档案、成员和服务器、项目/待修统计，以及待修优先的最近项目；默认窗口一屏容纳，无底部常驻状态提示和主页滚动栏。
-- 项目页支持搜索和类型筛选。机器用红石粉、建筑用石英、其他用青金石；计划中名称为金色，待修名称为红色。
-- 项目详情显示头像、游戏名和简介，可查看地图、编辑或导航。导航进入项目任一区块即结束，也可手动停止。
-- 报修只填说明；待修项目的按钮改为“完成”，负责人或具备相应权限者可一次解决全部未完成报修。
-- 编辑项目可移交负责人、处理工单或删除项目。删除需确认，会释放登记区块并删除关联工单，不改变实际方块。
-- 镇员行直接提供权限分配、移出和镇长移交；不展示 UUID，不再进入成员详情页。
-- 历史世界只读。换周目先设置新的当前世界，再归档旧世界，并保留本机旧 Xaero 实例与配置。
-- 同一服务器的不同 IP、域名或代理地址不会自动认作同一地址；成员应使用与小镇登记一致的地址和地图名称。
+New members start with read-only access. Ask a town administrator for permission to create projects. Keys can be changed in Minecraft’s Controls settings.
 
-本模组聚焦项目登记、设施说明与维护，不提供聊天、留言、文件、材料认捐或地块保护。
+## Host a town service
 
-### 客户端配置
+Requires **Node.js 24+**. Download the repository, copy `server/config.example.json` to `server/config.json`, then run:
 
-首次启动生成 `config/yetanothertown.json`：
-
-| 配置 | 默认值 | 作用 |
-| --- | --- | --- |
-| `endpoint` | `http://127.0.0.1:37841` | 外置服务地址；远程连接使用 HTTPS |
-| `entrySubtitleSeconds` | `3` | 进入项目提示秒数；0 关闭，最大 10 |
-| `entryCooldownSeconds` | `8` | 重复进入提示冷却，1～120 秒 |
-| `pollIntervalSeconds` | `10` | 资料同步间隔，2～300 秒 |
-| `animationEnabled` | `true` | 界面动画 |
-| `projectOverlayEnabled` | `true` | Xaero 项目图层 |
-| `mapBindings` | `{}` | 自动缓存的历史底图关联 |
-
-配置损坏或包含不支持的字段时先备份原文件再恢复默认值；读写失败则保留原文件、禁止覆盖并显示错误。会话令牌只保存在内存。Logo 支持 Minecraft 物品 ID 和 `texture:命名空间:路径.png` 资源包贴图。
-
-### 语言与翻译
-
-跟随游戏语言，内置简体中文 `zh_cn` 和英文 `en_us`，缺少的语言条目回退英文。玩家自定义名称和简介保留原文；系统默认角色与项目名称按本地语言显示。
-
-语言文件：`client/src/main/resources/assets/yetanothertown/lang/`。添加语言时复制 `en_us.json` 为游戏语言代码文件（例如 `ja_jp.json`），翻译值，保留键和 `%s`／`%1$s` 参数；不需要修改 Java 或服务端。也可通过资源包覆盖同一路径，格式见 [Fabric 语言文件说明](https://wiki.fabricmc.net/tutorial:lang)。
-
-服务错误通过 `messageKey` / `messageArgs` 在客户端翻译。旧版服务缺少语言键时显示通用本地化错误；完整错误提示需要更新服务端。构建检查键集合、占位符及源码引用；维护者拥有本地服务源码时，还会核对中英文服务文案的一致性。
-
-## 构建与验证
-
-需要 Node.js 24+、JDK 25+。不需要安装 npm 依赖。
-
-```powershell
-npm run build          # 编译三版本并生成单 JAR
-npm run test:client    # 客户端配置、协议、地图与交互测试
-npm run check:compat   # 发布时：客户端测试、81 组依赖检查并打包
+```sh
+npm --prefix server start
 ```
 
-产物：`build/libs/yetanothertown-1.0.0beta.jar`。前置依赖按锁定哈希下载，不会内置到发行 JAR。源码不包含服务端时仍可独立构建与运行客户端测试；维护者本地存在服务端时可另行验证服务。
+No npm dependencies are required. The default address is `http://127.0.0.1:37841`. For remote players, put the service behind an HTTPS reverse proxy and share that HTTPS address. Back up `server/data` to preserve town records.
 
-日常只运行改动相关的最小检查，发布才运行完整验证。自动检查不启动 Minecraft；没有实机视觉、线上部署或生产负载验证的内容不宣称已验证。
+## Good to know
 
-## 发布与服务连接
-
-- Modrinth 类型：客户端 Fabric 模组；必需依赖 Fabric API、Xaero’s World Map、Xaero’s Minimap；可选 Mod Menu。
-- 本版类型 Beta，版本号 `1.0.0-beta`；游戏版本按上表选择。
-- 上传 JAR 为上述构建产物；图标为 `client/src/main/resources/assets/yetanothertown/icon.png`，使用用户提供的像素小镇原图。
-- 游戏服务器不需要安装本模组，但必须另有可连接的小镇服务。服务源码不公开，部署与更新由维护者单独提供。
-- GitHub 推送与 Modrinth 提交审核分别进行，未提交的平台不视为已发布。
-
-## 安全边界
-
-- 使用当前游戏 UUID，不验证真实性；修改客户端可冒用 UUID，适用于信任成员的小镇协作，不能作为公开服务的防冒用身份认证。
-- 不发送启动器访问令牌、不进行 Mojang 身份验证。远程服务应使用 HTTPS。
-- 权限、周目归档、项目状态与关联检查由外置服务执行；客户端隐藏按钮不替代服务授权。
-- 不执行防拆、物品扣除、机器控制、传送或自动寻路。导航仅移除本模组创建的临时路标。
-- 保留客户端配置和个人 Xaero 地图目录；归档业务资料不会备份地形。
+- Designed for trusted communities: player UUIDs are read from the game, not independently authenticated.
+- Project areas are markers, not protected claims. The mod does not prevent block changes.
+- Terrain stays in each player’s local Xaero maps; the service only shares town and project records.
+- Everyone should connect using the same server address. Different IPs or domain names are treated separately.
