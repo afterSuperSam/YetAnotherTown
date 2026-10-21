@@ -14,7 +14,29 @@ public final class TownInputTest {
         checks++;
     }
 
+    private static void useLanguage(String language) throws Exception {
+        java.util.Map<String, String> translations = new java.util.HashMap<>();
+        try (var stream = TownText.class.getResourceAsStream("/assets/yetanothertown/lang/" + language + ".json")) {
+            net.minecraft.locale.Language.loadFromJson(stream, translations::put);
+        }
+        var previous = net.minecraft.locale.Language.getInstance();
+        net.minecraft.locale.Language.inject(new net.minecraft.locale.Language() {
+            public String getOrDefault(String key, String fallback) { return translations.getOrDefault(key, fallback); }
+            public boolean has(String key) { return translations.containsKey(key); }
+            public boolean isDefaultRightToLeft() { return false; }
+            public net.minecraft.util.FormattedCharSequence getVisualOrder(net.minecraft.network.chat.FormattedText text) { return previous.getVisualOrder(text); }
+        });
+    }
+
     public static void main(String[] arguments) throws Exception {
+        useLanguage("en_us");
+        require(TownScreen.state("planned").equals("Planned"), "English status uses the game language");
+        require(TownText.text("yat.label.project_count", 3).equals("3 projects"), "Counts support translation parameters");
+        require(TownText.recordName(TownGateway.object("name", "玩家内容%中文"), "").equals("玩家内容%中文"), "User content is never translated or formatted");
+        require(TownText.serviceError(TownGateway.object("messageKey", "yat.error.text_required", "messageArgs", new com.google.gson.Gson().fromJson("[{\"translate\":\"yat.field.project_name\"}]", JsonArray.class))).contains("Project"), "Service field errors use localized parameters");
+        require(ProjectHighlighter.textLines("hello world again", 11, String::length).equals(java.util.List.of("hello world", "again")), "English wrapping preserves words");
+        useLanguage("zh_cn");
+        require(TownScreen.state("planned").equals("计划中"), "Language changes do not retain cached English labels");
         MapTileSelection selection = new MapTileSelection(2, 4);
         selection.setEnd(-3, -5);
         var chunks = XaeroBridge.selectionChunks(selection, "minecraft:overworld");
@@ -52,14 +74,9 @@ public final class TownInputTest {
             var window = TownStyle.bounds(viewport, 360, 560, 346);
             require(window.left() >= 0 && window.right() <= viewport && Math.abs(window.left() - (viewport - window.right())) <= 1, "Main panel must remain centered with navigation inside the window");
         }
-        require(TownStyle.compactStatus("小镇设置没有修改").equals("未作修改"), "No-change feedback must use a concise meaningful label");
-        for (String status : new String[]{"已连接当前游戏身份", "正在使用当前游戏身份连接…", "长提示😀".repeat(8), "", "没有小镇管理权限"}) {
-            String compact = TownStyle.compactStatus(status);
-            require(compact.codePointCount(0, compact.length()) <= 8 && !compact.endsWith("\uD83D…"), "Header feedback must fit eight complete Unicode characters");
-        }
-        require(ProjectHighlighter.projectIcon("machine").equals("minecraft:redstone") && ProjectHighlighter.projectIcon("building").equals("minecraft:quartz")
-                && ProjectHighlighter.projectIcon("other").equals("minecraft:lapis_lazuli"), "Project categories must use their designated vanilla items");
         require(TownScreen.singleLine("第一行\r\n第二行\t第三行").equals("第一行 第二行 第三行"), "Project list must never render newline or tab control characters");
+        require(TownScreen.joinedTime("2026-10-20T23:04:59.999Z", java.time.ZoneId.of("Asia/Shanghai")).equals("2026-10-21 07:04"), "Joined time must use the local date and minute precision across midnight");
+        require(TownScreen.joinedTime("invalid", java.time.ZoneOffset.UTC).equals("—") && TownScreen.joinedTime("", java.time.ZoneOffset.UTC).equals("—"), "Missing joined dates must not render raw data or break member rows");
         var machine = TownGateway.object("type", "machine", "status", "maintenance", "createdAt", "2026-01-01T00:00:00Z");
         var building = TownGateway.object("type", "building", "status", "planned", "createdAt", "2026-02-01T00:00:00Z");
         require(TownScreen.matchesProjectType(machine, 0) && TownScreen.matchesProjectType(machine, 2) && !TownScreen.matchesProjectType(machine, 1), "Type filter must select categories without excluding all-type results");

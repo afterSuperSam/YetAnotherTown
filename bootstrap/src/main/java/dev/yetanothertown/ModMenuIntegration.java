@@ -13,7 +13,7 @@ public final class ModMenuIntegration implements ModMenuApi {
                 return (Screen) Class.forName("dev.yetanothertown." + Bootstrap.adapter() + ".VersionClient")
                         .getMethod("createConfigScreen", Screen.class).invoke(null, parent);
             } catch (ReflectiveOperationException exception) {
-                throw new IllegalStateException("Yet Another Town 配置界面初始化失败", exception);
+                throw new IllegalStateException("Yet Another Town settings screen initialization failed.", exception);
             }
         };
     }

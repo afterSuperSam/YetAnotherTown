@@ -111,14 +111,14 @@ public final class VersionClient {
     public static Screen createConfigScreen(Screen parent) {
         TownGateway gateway = TownGateway.get();
         var settings = gateway.config();
-        return new TownForm(parent, "配置", List.of(
-                TownForm.Field.text("endpoint", "服务地址", settings.endpoint),
-                TownForm.Field.number("entrySubtitleSeconds", "进入项目字幕（秒，0关闭）", settings.entrySubtitleSeconds),
-                TownForm.Field.number("entryCooldownSeconds", "重复进入提示间隔（秒）", settings.entryCooldownSeconds),
-                TownForm.Field.number("pollIntervalSeconds", "资料刷新间隔（秒）", settings.pollIntervalSeconds),
-                TownForm.Field.toggle("animationEnabled", "界面动画", settings.animationEnabled),
-                TownForm.Field.toggle("projectOverlayEnabled", "在 Xaero 地图显示项目", settings.projectOverlayEnabled),
-                TownForm.Field.action("keyBindings", "打开原版按键绑定", () -> show(new KeyBindsScreen(currentScreen(), Minecraft.getInstance().options)))),
+        return new TownForm(parent, TownText.text("yat.title.config"), List.of(
+                TownForm.Field.text("endpoint", TownText.text("yat.field.service_address"), settings.endpoint),
+                TownForm.Field.number("entrySubtitleSeconds", TownText.text("yat.field.entry_subtitle_duration"), settings.entrySubtitleSeconds),
+                TownForm.Field.number("entryCooldownSeconds", TownText.text("yat.field.entry_hint_interval"), settings.entryCooldownSeconds),
+                TownForm.Field.number("pollIntervalSeconds", TownText.text("yat.field.refresh_interval"), settings.pollIntervalSeconds),
+                TownForm.Field.toggle("animationEnabled", TownText.text("yat.field.ui_animation"), settings.animationEnabled),
+                TownForm.Field.toggle("projectOverlayEnabled", TownText.text("yat.field.show_projects"), settings.projectOverlayEnabled),
+                TownForm.Field.action("keyBindings", TownText.text("yat.ui.open_controls"), () -> show(new KeyBindsScreen(currentScreen(), Minecraft.getInstance().options)))),
                 gateway.configurationNotice.isEmpty() ? List.of() : List.of(gateway.configurationNotice), List.of(),
                 values -> {
                     gateway.configure(values.get("endpoint").getAsString(), values.get("entrySubtitleSeconds").getAsInt(), values.get("entryCooldownSeconds").getAsInt(),
@@ -146,22 +146,22 @@ public final class VersionClient {
                 hiddenGetter = hiddenOwner.getClass().getMethod("isHidden");
             }
         } catch (ReflectiveOperationException exception) {
-            throw new IllegalStateException("无法初始化当前版本的界面接口", exception);
+            throw new IllegalStateException(TownText.text("yat.error.init_version_ui"), exception);
         }
     }
 
     public static void show(Screen screen) {
         try { screenSetter.invoke(screenOwner, screen); }
-        catch (ReflectiveOperationException exception) { throw new IllegalStateException("打开小镇界面失败", exception); }
+        catch (ReflectiveOperationException exception) { throw new IllegalStateException(TownText.text("yat.error.open_town_screen"), exception); }
     }
 
     static Screen currentScreen() {
         try { return (Screen) (screenField == null ? screenGetter.invoke(screenOwner) : screenField.get(screenOwner)); }
-        catch (ReflectiveOperationException exception) { throw new IllegalStateException("读取当前界面失败", exception); }
+        catch (ReflectiveOperationException exception) { throw new IllegalStateException(TownText.text("yat.error.read_current_screen"), exception); }
     }
     static boolean hudHidden() {
         try { return hiddenField == null ? (boolean) hiddenGetter.invoke(hiddenOwner) : hiddenField.getBoolean(hiddenOwner); }
-        catch (ReflectiveOperationException exception) { throw new IllegalStateException("读取 HUD 显示状态失败", exception); }
+        catch (ReflectiveOperationException exception) { throw new IllegalStateException(TownText.text("yat.error.read_hud_state"), exception); }
     }
 
     static void connectIdentity(Runnable success) {
@@ -193,7 +193,6 @@ public final class VersionClient {
         var player = Minecraft.getInstance().player;
         return object("dimension", dimension(), "x", player == null ? 0 : (int) Math.floor(player.getX()), "y", player == null ? 64 : (int) Math.floor(player.getY()), "z", player == null ? 0 : (int) Math.floor(player.getZ()));
     }
-    static void copy(String text) { Minecraft.getInstance().keyboardHandler.setClipboard(text); }
     static String projectKeyLabel() { return projectKey == null ? "X" : projectKey.isUnbound() ? "" : projectKey.getTranslatedKeyMessage().getString(); }
 
     static void drawAvatar(GuiGraphicsExtractor graphics, int x, int y, int size) {
@@ -222,10 +221,7 @@ public final class VersionClient {
         graphics.blit(RenderPipelines.GUI_TEXTURED, texture, x, y, 40, 8, size, size, 8, 8, 64, 64);
     }
 
-    static void drawLogo(GuiGraphicsExtractor graphics, String identifier, int x, int y) {
-        drawLogo(graphics, identifier, x, y, 28);
-    }
-
+    /** 物品与贴图使用相同绘制边界，间距由页面布局决定。 */
     static void drawLogo(GuiGraphicsExtractor graphics, String identifier, int x, int y, int size) {
         if (identifier.startsWith("texture:")) {
             Identifier texture = Identifier.tryParse(identifier.substring("texture:".length()));
@@ -238,13 +234,13 @@ public final class VersionClient {
         Identifier id = Identifier.tryParse(identifier);
         var item = id == null ? Items.OAK_SAPLING : BuiltInRegistries.ITEM.getValue(id);
         graphics.pose().pushMatrix();
-        graphics.pose().translate(x + 4, y + 4).scale(Math.max(8, size - 8) / 16f);
+        graphics.pose().translate(x, y).scale(size / 16f);
         graphics.item(new ItemStack(item == null || item == Items.AIR ? Items.OAK_SAPLING : item), 0, 0);
         graphics.pose().popMatrix();
     }
 
     static boolean navigate(JsonObject record) {
-        if (!XaeroBridge.isCurrentWorld()) { TownGateway.get().status = "导航仅在当前匹配的世界与周目中可用"; return false; }
+        if (!XaeroBridge.isCurrentWorld()) { TownGateway.get().status = TownText.text("yat.error.navigation_world"); return false; }
         JsonObject target = record.deepCopy();
         if (record.has("chunks")) {
             JsonObject chunks = record.getAsJsonObject("chunks");
@@ -257,11 +253,11 @@ public final class VersionClient {
         navigationTown = TownGateway.get().townId;
         navigationWorld = TownGateway.get().worldId;
         navigationContext = TownGateway.get().context();
-        TownGateway.get().status = "已设为导航目标：" + navigationName(target);
+        TownGateway.get().status = TownText.text("yat.status.navigation_target_prefix") + navigationName(target);
         return true;
     }
     static JsonObject navigation() { return navigation; }
-    static String navigationName(JsonObject target) { return target.has("chunks") ? XaeroBridge.projectName(target) : TownScreen.stringValue(target, "title", TownScreen.stringValue(target, "name", "导航目标")); }
+    static String navigationName(JsonObject target) { return target.has("chunks") ? XaeroBridge.projectName(target) : TownScreen.stringValue(target, "title", TownScreen.stringValue(target, "name", TownText.text("yat.label.navigation_target"))); }
     static void updateNavigation(boolean usable, String dimension, int blockX, int blockZ) {
         TownGateway gateway = TownGateway.get();
         if (navigation == null) return;
@@ -278,9 +274,9 @@ public final class VersionClient {
         if (arrived) {
             String name = navigationName(navigation);
             clearNavigation();
-            gateway.status = "已到达：" + name;
+            gateway.status = TownText.text("yat.status.arrived_prefix") + name;
         }
     }
-    static void stopNavigation() { clearNavigation(); TownGateway.get().status = "已停止导航"; }
+    static void stopNavigation() { clearNavigation(); TownGateway.get().status = TownText.text("yat.status.navigation_stopped"); }
     static void clearNavigation() { navigation = null; navigationTown = ""; navigationWorld = ""; navigationContext = null; XaeroBridge.clearNavigation(); }
 }

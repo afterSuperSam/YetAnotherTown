@@ -164,8 +164,8 @@ public final class XaeroBridge {
                 rightClickDimensionField = mapField("rightClickDim");
             }
             TownGateway gateway = TownGateway.get();
-            if (VersionClient.navigation() != null) options.add(option(map, options.size(), "停止小镇导航", VersionClient::stopNavigation));
-            options.add(option(map, options.size(), gateway.config().projectOverlayEnabled ? "隐藏小镇工程区域" : "显示小镇工程区域", () -> {
+            if (VersionClient.navigation() != null) options.add(option(map, options.size(), TownText.text("yat.map.stop_navigation"), VersionClient::stopNavigation));
+            options.add(option(map, options.size(), gateway.config().projectOverlayEnabled ? TownText.text("yat.map.hide_projects") : TownText.text("yat.map.show_projects"), () -> {
                 gateway.setProjectOverlayEnabled(!gateway.config().projectOverlayEnabled);
                 ProjectHighlighter.refresh();
             }));
@@ -182,26 +182,26 @@ public final class XaeroBridge {
             String mapKey = currentMapKey();
             List<JsonObject> overlaps = projectsInSelection(chunks);
             String reason = creationBlockReason();
-            if (reason.isEmpty() && !overlaps.isEmpty()) reason = "重叠 " + overlaps.size() + " 个工程：" + conflictNames(overlaps);
-            String createLabel = reason.isEmpty() ? "在选区创建工程" : "不能创建：" + reason;
+            if (reason.isEmpty() && !overlaps.isEmpty()) reason = TownText.text("yat.map.overlap_prefix") + overlaps.size() + TownText.text("yat.map.overlap_suffix") + conflictNames(overlaps);
+            String createLabel = reason.isEmpty() ? TownText.text("yat.map.create_in_selection") : TownText.text("yat.map.cannot_create_prefix") + reason;
             options.add(option(map, options.size(), createLabel, () -> {
                 if (!validMenu(map, context, world, mapKey, dimension) || !creationBlockReason().isEmpty()) return;
                 gateway.setProjectOverlayEnabled(true);
                 ProjectHighlighter.refresh();
-                if (!projectsInSelection(chunks).isEmpty()) { gateway.status = "选区与已有工程重叠，请重新选择空闲区块"; return; }
+                if (!projectsInSelection(chunks).isEmpty()) { gateway.status = TownText.text("yat.error.selection_overlap"); return; }
                 if (map instanceof BoundMap bound) bound.suspendForForm();
                 TownScreen.createProject(map, chunks.deepCopy());
             }).setActive(reason.isEmpty()));
             if (!isCurrentWorld() && !archived(selectedWorld())) {
                 addAssociationOption(map, options, chunks);
             }
-            if (!overlaps.isEmpty() && !gateway.config().projectOverlayEnabled) options.add(option(map, options.size(), "显示选区冲突区域", () -> {
+            if (!overlaps.isEmpty() && !gateway.config().projectOverlayEnabled) options.add(option(map, options.size(), TownText.text("yat.map.show_conflicts"), () -> {
                 gateway.setProjectOverlayEnabled(true);
                 ProjectHighlighter.refresh();
             }));
             for (JsonObject project : overlaps) {
                 String id = stringValue(project, "id");
-                options.add(option(map, options.size(), "查看工程：" + projectName(project), () -> {
+                options.add(option(map, options.size(), TownText.text("yat.map.view_project_prefix") + projectName(project), () -> {
                     if (!validMenu(map, context, world, mapKey, dimension)) return;
                     for (JsonObject current : projectsInSelection(chunks)) if (stringValue(current, "id").equals(id)) {
                         if (map instanceof BoundMap bound) bound.suspendForForm();
@@ -213,7 +213,7 @@ public final class XaeroBridge {
         } catch (ReflectiveOperationException exception) {
             menuUnavailable = true;
             LOGGER.log(System.Logger.Level.ERROR, "Unsupported Xaero native selection interface", exception);
-            TownGateway.get().status = "当前 Xaero 版本的原生选区接口不兼容，请使用 README 指定版本";
+            TownGateway.get().status = TownText.text("yat.error.selection_api");
         }
     }
 
@@ -225,12 +225,15 @@ public final class XaeroBridge {
 
     private static RightClickOption option(GuiMap map, int index, String label, Runnable action) {
         return new RightClickOption(label, index, map) {
-            @Override public void onAction(Screen screen) { action.run(); }
+            @Override public void onAction(Screen screen) {
+                try { action.run(); }
+                catch (IllegalArgumentException | IllegalStateException exception) { TownForm.showError(map, exception.getMessage()); }
+            }
         };
     }
 
     private static void addAssociationOption(GuiMap map, ArrayList<RightClickOption> options, JsonObject chunks) {
-        options.add(option(map, options.size(), "小镇地图设置", () -> {
+        options.add(option(map, options.size(), TownText.text("yat.title.map_settings"), () -> {
             if (map instanceof BoundMap bound) bound.suspendForForm();
             TownScreen.openMapBinding(map);
         }));
@@ -242,11 +245,11 @@ public final class XaeroBridge {
     }
 
     private static String creationBlockReason() {
-        if (archived(selectedWorld())) return "历史周目只读";
-        if (!contains(arrayValue(TownGateway.get().snapshot, "permissions"), "project.create")) return "当前成员只读";
+        if (archived(selectedWorld())) return TownText.text("yat.error.historic_season_read_only");
+        if (!contains(arrayValue(TownGateway.get().snapshot, "permissions"), "project.create")) return TownText.text("yat.error.member_read_only");
         if (isCurrentWorld()) return "";
-        if (Minecraft.getInstance().player == null) return "请先进入此周目的游戏世界";
-        return "地图与小镇当前世界不匹配，请查看小镇地图设置";
+        if (Minecraft.getInstance().player == null) return TownText.text("yat.error.enter_season_world");
+        return TownText.text("yat.error.current_map_mismatch");
     }
 
     /** 单地图模式不会更新玩家实例，匹配共享名称后通过原生接口确认玩家实例。 */
@@ -279,7 +282,7 @@ public final class XaeroBridge {
 
     public static String currentMapSetupBlockReason() {
         if (suspendedMap != null || VersionClient.currentScreen() instanceof BoundMap)
-            return "请先关闭历史地图，返回玩家所在地图后再设置当前世界";
+            return TownText.text("yat.error.close_historic_map");
         Minecraft client = Minecraft.getInstance();
         MapProcessor processor = processor();
         MapWorld world = processor == null ? null : processor.getMapWorld();
@@ -291,11 +294,11 @@ public final class XaeroBridge {
     }
 
     static String associationBlockReason(JsonObject world, boolean live, String playerDimension, String viewedDimension, String current, String future) {
-        if (world.isEmpty()) return "请先选择当前周目，等待资料加载完成";
-        if (archived(world)) return "历史周目只读，请使用历史地图关联";
-        if (!live) return "请先进入游戏，等待 Xaero 玩家地图加载完成";
-        if (!playerDimension.equals(viewedDimension)) return "请切回玩家当前维度后关联";
-        if (current == null || !current.equals(future)) return "底图正在切换，请加载完成后关联";
+        if (world.isEmpty()) return TownText.text("yat.error.select_current_season");
+        if (archived(world)) return TownText.text("yat.error.bind_historic_season");
+        if (!live) return TownText.text("yat.error.wait_player_map");
+        if (!playerDimension.equals(viewedDimension)) return TownText.text("yat.error.bind_current_dimension");
+        if (current == null || !current.equals(future)) return TownText.text("yat.error.wait_map_switch");
         return "";
     }
 
@@ -316,13 +319,13 @@ public final class XaeroBridge {
     }
 
     static String projectName(JsonObject project) {
-        String name = stringValue(project, "name");
-        return name.isBlank() ? "未命名预留工程" : name;
+        String name = TownText.recordName(project, "");
+        return name.isBlank() ? TownText.text("yat.project.unnamed_reserved") : name;
     }
 
     private static String conflictNames(List<JsonObject> projects) {
         return projects.stream().limit(2).map(project -> ProjectHighlighter.summary(projectName(project), 14)).collect(java.util.stream.Collectors.joining("、"))
-                + (projects.size() > 2 ? "等" : "");
+                + (projects.size() > 2 ? TownText.text("yat.label.and_more") : "");
     }
 
     public static boolean openMap(Screen returnTo) {
@@ -330,7 +333,7 @@ public final class XaeroBridge {
         MapProcessor processor = processor();
         Minecraft minecraft = Minecraft.getInstance();
         if (processor == null || minecraft.player == null || !processor.isMapWorldUsable()) {
-            gateway.status = "请先进入游戏世界，等待 Xaero 个人地图加载完成";
+            gateway.status = TownText.text("yat.error.wait_personal_map");
             return false;
         }
         JsonObject world = selectedWorld();
@@ -345,7 +348,7 @@ public final class XaeroBridge {
         MapWorld mapWorld = processor.getMapWorld();
         MapDimension dimension = mapWorld.getCurrentDimension();
         if (world.isEmpty() || dimension == null || identity.length != 2 || !identity[0].equals(mapWorld.getMainId()) || !dimension.getMultiworldIdsCopy().contains(identity[1])) {
-            gateway.status = "本地未绑定或缺少此周目的当前维度底图；请在 Xaero 中选择对应已保存实例，再到世界详情绑定个人地图";
+            gateway.status = TownText.text("yat.error.missing_season_map");
             return false;
         }
         if (returnTo instanceof GuiMap existing && existing.getMapProcessor() == processor
@@ -362,26 +365,26 @@ public final class XaeroBridge {
         TownGateway gateway = TownGateway.get();
         Minecraft minecraft = Minecraft.getInstance();
         if (!isCurrentWorld() || !stringValue(record, "worldId").equals(gateway.worldId)) {
-            gateway.status = "历史或其他周目的目标只能查看，不能导航";
+            gateway.status = TownText.text("yat.error.navigation_other_season");
             return false;
         }
         if (minecraft.level == null || !stringValue(record, "dimension").equals(minecraft.level.dimension().identifier().toString())) {
-            gateway.status = "目标位于 " + stringValue(record, "dimension") + "，请先进入该维度";
+            gateway.status = TownText.text("yat.error.target_dimension", stringValue(record, "dimension"));
             return false;
         }
         HudSession session = HudSession.getCurrentSession();
-        if (session == null) { gateway.status = "Xaero Minimap 尚未加载"; return false; }
+        if (session == null) { gateway.status = TownText.text("yat.error.minimap_not_loaded"); return false; }
         MinimapSession minimap = session.getSession(BuiltInHudModules.MINIMAP);
-        if (minimap == null || minimap.getWorldManager().getCurrentWorld() == null) { gateway.status = "Xaero Minimap 还没有当前世界资料"; return false; }
+        if (minimap == null || minimap.getWorldManager().getCurrentWorld() == null) { gateway.status = TownText.text("yat.error.minimap_world_missing"); return false; }
         JsonObject chunks = objectValue(record, "chunks");
         int x = record.has("x") ? integer(record, "x") : (integer(chunks, "minX") + integer(chunks, "maxX")) * 8 + 8;
         int z = record.has("z") ? integer(record, "z") : (integer(chunks, "minZ") + integer(chunks, "maxZ")) * 8 + 8;
         int y = record.has("y") ? integer(record, "y") : minecraft.player.getBlockY();
         if (navigationSet != null && navigationWaypoint != null) navigationSet.remove(navigationWaypoint);
-        navigationWaypoint = new Waypoint(x, y, z, stringValue(record, "name").isEmpty() ? "小镇目标" : stringValue(record, "name"), "T", WaypointColor.GOLD, WaypointPurpose.DESTINATION, true, record.has("y"));
+        navigationWaypoint = new Waypoint(x, y, z, stringValue(record, "name").isEmpty() ? TownText.text("yat.label.town_waypoint") : stringValue(record, "name"), "T", WaypointColor.GOLD, WaypointPurpose.DESTINATION, true, record.has("y"));
         navigationSet = minimap.getWorldManager().getCurrentWorld().getCurrentWaypointSet();
         navigationSet.add(navigationWaypoint);
-        gateway.status = "已在 Xaero Minimap 添加临时导航目标";
+        gateway.status = TownText.text("yat.status.waypoint_added");
         return true;
     }
 

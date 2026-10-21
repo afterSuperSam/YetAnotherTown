@@ -91,7 +91,7 @@ final class ProjectHighlighter extends ChunkHighlighter {
             String introduction = stringValue(project, "purpose");
             if (!stringValue(project, "notes").isBlank()) introduction += (introduction.isBlank() ? "" : " / ") + stringValue(project, "notes");
             int color = switch (status) { case "planned" -> 0xDAB75C; case "active" -> 0xE49754; case "maintenance" -> 0xDF9481; case "completed" -> 0x73BC78; default -> 0x999999; };
-            areas.add(new Area(stringValue(project, "dimension"), integer(chunks, "minX"), integer(chunks, "maxX"), integer(chunks, "minZ"), integer(chunks, "maxZ"), color, name, leader, leaderName.isBlank() ? "未指定" : leaderName, type, introduction.isBlank() ? "暂无简介" : introduction, status));
+            areas.add(new Area(stringValue(project, "dimension"), integer(chunks, "minX"), integer(chunks, "maxX"), integer(chunks, "minZ"), integer(chunks, "maxZ"), color, name, leader, leaderName.isBlank() ? TownText.text("yat.label.unspecified") : leaderName, type, introduction.isBlank() ? TownText.text("yat.empty.summary") : introduction, status));
         }
         Overlay updated = new Overlay(world, nativeRegistry, snapshot, context, gateway.worldId, enabled, Map.copyOf(bindings), Map.copyOf(viewedMaps), List.copyOf(areas));
         overlay = updated;
@@ -168,11 +168,11 @@ final class ProjectHighlighter extends ChunkHighlighter {
         String id = dimension.identifier().toString();
         for (Area area : value.areas) if (area.dimension.equals(id) && area.contains(x >> 4, z >> 4)) {
             tooltips.add(Component.literal(summary(area.name, 40)));
-            tooltips.add(Component.literal("负责人：" + summary(area.leaderName, 40)));
-            String type = switch (area.type) { case "building" -> "建筑"; case "machine" -> "机器"; default -> "其他"; };
-            tooltips.add(Component.literal("类型：" + type));
-            for (String line : textLines("简介：" + summary(area.introduction, 100), Math.max(40, width), Minecraft.getInstance().font)) tooltips.add(Component.literal(line));
-            if (!area.status.equals("completed")) tooltips.add(Component.literal("状态：" + state(area.status)));
+            tooltips.add(Component.literal(TownText.text("yat.label.owner") + summary(area.leaderName, 40)));
+            String type = switch (area.type) { case "building" -> TownText.text("yat.project.type.building"); case "machine" -> TownText.text("yat.project.type.machine"); default -> TownText.text("yat.project.type.other"); };
+            tooltips.add(Component.literal(TownText.text("yat.label.type") + type));
+            for (String line : textLines(TownText.text("yat.label.summary") + summary(area.introduction, 100), Math.max(40, width), Minecraft.getInstance().font)) tooltips.add(Component.literal(line));
+            if (!area.status.equals("completed")) tooltips.add(Component.literal(TownText.text("yat.label.status") + state(area.status)));
         }
     }
 
@@ -200,14 +200,14 @@ final class ProjectHighlighter extends ChunkHighlighter {
             graphics.nextStratum();
             TooltipRenderUtil.extractTooltipBackground(graphics, x, y, layout.width(), layout.height(), null);
             VersionClient.drawAvatar(graphics, area.leaderId, area.leaderName, x, y, layout.avatarSize());
-            VersionClient.drawLogo(graphics, projectIcon(area.type), textX - 4, y - 4, 20);
+            VersionClient.drawLogo(graphics, projectIcon(area.type), textX, TownStyle.centeredY(y + 1, font.lineHeight, 12), 12);
             int titleColor = area.status.equals("maintenance") ? TownStyle.DANGER : area.status.equals("planned") ? TownStyle.ACCENT : TownStyle.TEXT;
             for (int index = 0; index < layout.title().size(); index++) graphics.text(font, layout.title().get(index), textX + TYPE_ICON_OFFSET, y + 1 + index * step, titleColor, true);
             for (int index = 0; index < layout.owner().size(); index++) graphics.text(font, layout.owner().get(index), textX, y + layout.ownerTop() + index * step, TownStyle.MUTED, false);
             for (int index = 0; index < layout.introduction().size(); index++) graphics.text(font, layout.introduction().get(index), x, y + layout.introductionTop() + index * step, TownStyle.TEXT, false);
             if (!area.status.equals("completed")) graphics.text(font, state(area.status), x + layout.statusLeft(), y + 1,
                     area.status.equals("maintenance") ? TownStyle.DANGER : area.status.equals("active") ? TownStyle.SUCCESS : TownStyle.ACCENT, false);
-        } catch (IllegalAccessException exception) { throw new IllegalStateException("读取 Xaero 地图悬停位置失败", exception); }
+        } catch (IllegalAccessException exception) { throw new IllegalStateException(TownText.text("yat.error.read_map_hover"), exception); }
     }
 
     static String projectIcon(String type) {
@@ -251,7 +251,15 @@ final class ProjectHighlighter extends ChunkHighlighter {
             for (int offset = 0; offset < paragraph.length();) {
                 int point = paragraph.codePointAt(offset);
                 String next = new String(Character.toChars(point));
-                if (!line.isEmpty() && measure.applyAsInt(line + next) > width) { result.add(line.toString()); line.setLength(0); }
+                if (!line.isEmpty() && measure.applyAsInt(line + next) > width) {
+                    int boundary = line.lastIndexOf(" ");
+                    if (Character.isWhitespace(point)) {
+                        result.add(line.toString().stripTrailing()); line.setLength(0);
+                        offset += Character.charCount(point); continue;
+                    } else if (boundary > 0) {
+                        result.add(line.substring(0, boundary).stripTrailing()); line.delete(0, boundary + 1);
+                    } else { result.add(line.toString()); line.setLength(0); }
+                }
                 line.append(next); offset += Character.charCount(point);
             }
             result.add(line.toString());
@@ -280,7 +288,7 @@ final class ProjectHighlighter extends ChunkHighlighter {
         static final Field MENU = field("rightClickMenu"), WAYPOINTS = field("overWaypointsMenu"), PLAYERS = field("overPlayersMenu");
         private static Field field(String name) {
             try { Field field = GuiMap.class.getDeclaredField(name); field.setAccessible(true); return field; }
-            catch (ReflectiveOperationException exception) { throw new IllegalStateException("Xaero 地图悬停接口不兼容：" + name, exception); }
+            catch (ReflectiveOperationException exception) { throw new IllegalStateException(TownText.text("yat.error.map_hover_incompatible_prefix") + name, exception); }
         }
     }
 

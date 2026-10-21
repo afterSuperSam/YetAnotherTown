@@ -40,27 +40,17 @@ final class TownStyle {
 
     private TownStyle() {}
 
+    static int centeredY(int top, int height, int contentHeight) {
+        return top + Math.floorDiv(height - contentHeight, 2);
+    }
+
     static void heading(GuiGraphicsExtractor graphics, Font font, String title, int x, int y, int width) {
-        icon(graphics, 0, x, y, FRAME_TEXT);
+        icon(graphics, 0, x, centeredY(y, font.lineHeight, 8), FRAME_TEXT);
         graphics.text(font, font.plainSubstrByWidth(title, Math.max(0, width - 13)), x + 13, y, FRAME_TEXT, false);
     }
 
-    /** 状态区只显示短反馈，悬停保留完整原因。 */
-    static String compactStatus(String status) {
-        String text = status.replaceAll("\\s+", " ").strip();
-        text = switch (text) {
-            case "小镇设置没有修改" -> "未作修改";
-            case "已连接当前游戏身份" -> "已连接";
-            case "已自动匹配小镇当前地图" -> "地图已匹配";
-            case "正在使用当前游戏身份连接…" -> "正在连接…";
-            case "进入世界后自动读取游戏身份并连接小镇服务" -> "等待进入世界";
-            default -> text;
-        };
-        return text.codePointCount(0, text.length()) <= 8 ? text : text.substring(0, text.offsetByCodePoints(0, 7)) + "…";
-    }
-
     static void feedback(GuiGraphicsExtractor graphics, Font font, String status, int x, int y, int width, int statusColor, int mouseX, int mouseY) {
-        String feedback = font.plainSubstrByWidth(compactStatus(status), Math.max(0, width));
+        String feedback = font.plainSubstrByWidth(status.replaceAll("\\s+", " ").strip(), Math.max(0, width));
         graphics.text(font, feedback, x, y, statusColor, false);
         if (!status.isBlank() && mouseX >= x && mouseX < x + width && mouseY >= y - 3 && mouseY < y + font.lineHeight + 3)
             graphics.setTooltipForNextFrame(Component.literal(status), mouseX, mouseY);
@@ -132,7 +122,9 @@ final class TownStyle {
     }
 
     static Button button(String label, int x, int y, int width, Runnable action) {
-        return Button.builder(Component.literal(label), ignored -> action.run()).bounds(x, y, Math.max(18, width), 20).build();
+        Button button = Button.builder(Component.literal(label), ignored -> action.run()).bounds(x, y, Math.max(18, width), 20).build();
+        button.setTooltip(net.minecraft.client.gui.components.Tooltip.create(Component.literal(label)));
+        return button;
     }
 
     static Button tab(String label, int x, int y, int width, Runnable action, boolean selected) {

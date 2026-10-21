@@ -19,7 +19,22 @@ public final class TownGatewayTest {
         if (!condition) throw new AssertionError(message);
         checks++;
     }
+    private static void useLanguage(String language) throws Exception {
+        java.util.Map<String, String> translations = new java.util.HashMap<>();
+        try (var stream = TownText.class.getResourceAsStream("/assets/yetanothertown/lang/" + language + ".json")) {
+            net.minecraft.locale.Language.loadFromJson(stream, translations::put);
+        }
+        var previous = net.minecraft.locale.Language.getInstance();
+        net.minecraft.locale.Language.inject(new net.minecraft.locale.Language() {
+            public String getOrDefault(String key, String fallback) { return translations.getOrDefault(key, fallback); }
+            public boolean has(String key) { return translations.containsKey(key); }
+            public boolean isDefaultRightToLeft() { return false; }
+            public net.minecraft.util.FormattedCharSequence getVisualOrder(net.minecraft.network.chat.FormattedText text) { return previous.getVisualOrder(text); }
+        });
+    }
+
     public static void main(String[] arguments) throws Exception {
+        useLanguage("zh_cn");
         TownGateway gateway = TownGateway.INSTANCE;
         for (String invalid : new String[]{"{\"keyBindingsVersion\":1,\"endpoint\":\"https://old.example.test\"}", "{", "null", "[]", "{\"pollIntervalSeconds\":0}", "{\"pollIntervalSeconds\":4294967306}"}) {
             var brokenDirectory = Files.createTempDirectory("yat-invalid-config-");
@@ -278,7 +293,7 @@ public final class TownGatewayTest {
             require(!gateway.matchesSharedMap("town.example", "minecraft:overworld", "world"), "legacy snapshots without a current pointer cannot automatically match maps");
             gateway.townId = savedTown; gateway.worldId = savedWorld; gateway.snapshot = savedSnapshot;
             gateway.request("denied", TownGateway.object()).handle((value, error) -> null).join();
-            require(gateway.status.equals("没有操作权限"), "service errors remain Chinese");
+            require(gateway.status.equals(TownText.text("yat.error.service_request")), "legacy service errors use a localized fallback");
             gateway.request("malformed", TownGateway.object()).handle((value, error) -> null).join();
             require(gateway.status.equals("服务返回格式错误"), "invalid protocol explicitly classified");
             for (String action : new String[]{"invalid-ok", "invalid-error", "invalid-message", "invalid-data"}) {
@@ -378,7 +393,7 @@ public final class TownGatewayTest {
             gateway.request("expired", TownGateway.object()).handle((value, error) -> null).join();
             require(!gateway.isCurrent(previousSession), "session expiry invalidates pending screen operations");
             require(!gateway.loggedIn() && gateway.towns.isEmpty() && gateway.snapshot.isEmpty() && gateway.player().isEmpty(), "expired session clears private cached data");
-            require(gateway.status.equals("登录已过期"), "expired session preserves visible error");
+            require(gateway.status.equals(TownText.text("yat.error.service_request")), "expired session preserves visible error");
             gateway.login(playerId, "Sam").get(5, TimeUnit.SECONDS);
             gateway.townId = "shared";
             gateway.worldId = "b".repeat(24);

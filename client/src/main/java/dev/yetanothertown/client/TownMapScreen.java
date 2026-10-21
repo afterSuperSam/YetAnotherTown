@@ -11,7 +11,7 @@ import java.util.List;
 /** 地图入口交由 Xaero 原生地图显示地形、框选与工程叠层。 */
 public final class TownMapScreen extends Screen {
     private final Screen parent;
-    private String information = "正在准备 Xaero 地图…";
+    private String information = TownText.text("yat.status.preparing_map");
     private TownStyle.Window window;
     private List<String> informationLines = List.of();
     private boolean pendingOpen = true;
@@ -23,7 +23,7 @@ public final class TownMapScreen extends Screen {
     private int maximumScroll;
 
     public TownMapScreen(Screen parent) {
-        super(Component.literal("小镇地图"));
+        super(Component.literal(TownText.text("yat.title.town_map")));
         this.parent = parent;
     }
 
@@ -35,9 +35,9 @@ public final class TownMapScreen extends Screen {
         bodyBottom = window.bottom() - 91;
         layoutInformation();
         int buttonWidth = Math.min(250, window.width() - 40);
-        addRenderableWidget(TownStyle.button("小镇地图设置", (width - buttonWidth) / 2, window.bottom() - 81, buttonWidth, () -> TownScreen.openMapBinding(parent)));
-        addRenderableWidget(TownStyle.button("重新打开 Xaero 地图", (width - buttonWidth) / 2, window.bottom() - 55, buttonWidth, this::open));
-        addRenderableWidget(TownStyle.button("返回小镇", (width - buttonWidth) / 2, window.bottom() - 29, buttonWidth, this::onClose));
+        addRenderableWidget(TownStyle.button(TownText.text("yat.title.map_settings"), (width - buttonWidth) / 2, window.bottom() - 81, buttonWidth, () -> TownScreen.openMapBinding(parent)));
+        addRenderableWidget(TownStyle.button(TownText.text("yat.ui.reopen_xaero"), (width - buttonWidth) / 2, window.bottom() - 55, buttonWidth, this::open));
+        addRenderableWidget(TownStyle.button(TownText.text("yat.ui.back_to_town"), (width - buttonWidth) / 2, window.bottom() - 29, buttonWidth, this::onClose));
     }
 
     @Override public void tick() {
@@ -46,9 +46,9 @@ public final class TownMapScreen extends Screen {
 
     private void open() {
         pendingOpen = false;
-        information = "打开地图失败；请确认已进入世界，且 World Map 与 Minimap 前置版本正确。";
+        information = TownText.text("yat.error.open_map");
         boolean opened = XaeroBridge.openMap(parent);
-        information = opened ? "已打开 Xaero 地图" : TownGateway.get().status;
+        information = opened ? TownText.text("yat.status.map_opened") : TownGateway.get().status;
         scroll = 0;
         layoutInformation();
     }

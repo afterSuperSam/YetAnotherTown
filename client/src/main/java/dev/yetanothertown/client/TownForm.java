@@ -30,7 +30,7 @@ final class TownForm extends Screen {
         static Field icon(String key, String label, String value) { return new Field(key, label, value, null, null, false, false, false, true, null); }
         static Field action(String key, String label, Runnable run) { return new Field(key, label, "", null, null, false, true, false, false, run); }
         Field compact() { return new Field(key, label, initial, values, labels, number, true, multiline, icon, action); }
-        static Field toggle(String key, String label, boolean value) { return choice(key, label, Boolean.toString(value), new String[]{"false", "true"}, new String[]{"关闭", "开启"}); }
+        static Field toggle(String key, String label, boolean value) { return choice(key, label, Boolean.toString(value), new String[]{"false", "true"}, new String[]{TownText.text("yat.ui.off"), TownText.text("yat.ui.on")}); }
     }
     record Action(String label, Runnable run, java.util.function.Supplier<String> liveLabel) {
         Action(String label, Runnable run) { this(label, run, null); }
@@ -50,6 +50,9 @@ final class TownForm extends Screen {
     private final Map<Button, Action> liveActions = new LinkedHashMap<>();
     private final List<AbstractWidget> focusOrder = new ArrayList<>();
     private final List<Integer> separators = new ArrayList<>();
+    private List<JsonObject> towns = List.of();
+    private final List<TownCard> townCards = new ArrayList<>();
+    private record TownCard(JsonObject town, int x, int y, int width) { }
     private int scroll;
     private int maximumScroll;
     private int left;
@@ -62,8 +65,9 @@ final class TownForm extends Screen {
     private boolean discardConfirmation;
     private boolean breadcrumbTitle;
     private boolean guardActions;
-    private String titleIcon;
-    private int titleColor = TownStyle.FRAME_TEXT;
+    private JsonObject project;
+    private String projectOwner;
+    private int projectHeaderY;
     private int returningFocusIndex = -1;
     private AbstractWidget pendingFocus;
     private record TextLine(String value, int x, int y, int color) { }
@@ -86,24 +90,36 @@ final class TownForm extends Screen {
 
     TownForm withBreadcrumbTitle() { breadcrumbTitle = true; return this; }
     TownForm withGuardedActions() { guardActions = true; return this; }
-    TownForm withProjectTitle(JsonObject project) {
-        titleIcon = ProjectHighlighter.projectIcon(TownScreen.stringValue(project, "type"));
-        titleColor = TownScreen.projectColor(project);
+    TownForm withProjectTitle(JsonObject project, String owner) {
+        this.project = project;
+        projectOwner = owner;
         return this;
     }
 
     private void runAction(Action action) {
         if (submitting || !validContext()) return;
         if (guardActions && fields.stream().anyMatch(field -> !field.initial().equals(values.get(field.key())))) {
-            error = "请先保存或取消修改";
+            error = TownText.text("yat.error.unsaved_changes");
             return;
         }
-        action.run().run();
+        try { action.run().run(); }
+        catch (IllegalArgumentException | IllegalStateException exception) {
+            submitting = false;
+            error = exception.getMessage();
+            rebuild();
+        }
     }
 
     void updateContent(List<String> description, List<Action> actions) {
         this.description.clear(); this.description.addAll(description);
         this.actions.clear(); this.actions.addAll(actions);
+        rebuild();
+    }
+
+    void showTowns(List<JsonObject> towns) {
+        this.towns = List.copyOf(towns);
+        description.clear();
+        if (towns.isEmpty()) description.add(TownText.text("yat.empty.joinable_towns"));
         rebuild();
     }
 
@@ -130,17 +146,36 @@ final class TownForm extends Screen {
         liveActions.clear();
         focusOrder.clear();
         separators.clear();
+        townCards.clear();
         window = TownStyle.bounds(width, height, 440, 320);
         panelWidth = window.width();
         left = window.left();
-        bodyTop = window.top() + (breadcrumbTitle ? 32 : 48);
+        bodyTop = window.top() + (breadcrumbTitle || project != null ? 32 : 48);
         bodyBottom = window.bottom() - 57;
         int contentLeft = left + 16;
         int contentWidth = panelWidth - 32;
         int y = bodyTop + 6 - scroll;
+        if (project != null) {
+            projectHeaderY = y;
+            String status = TownScreen.state(TownScreen.stringValue(project, "status"));
+            String name = font.plainSubstrByWidth(title.getString(), Math.max(0, contentWidth - 44 - (status.isEmpty() ? 0 : font.width(status) + 8)));
+            labels.add(new TextLine(name, contentLeft + 44, y + 1, TownScreen.projectColor(project)));
+            if (!status.isEmpty()) labels.add(new TextLine(status, contentLeft + 44 + font.width(name) + 8, y + 1, TownScreen.projectColor(project)));
+            labels.add(new TextLine(font.plainSubstrByWidth(projectOwner, contentWidth - 30), contentLeft + 30, y + 14, TownStyle.MUTED));
+            y += 34;
+            String purpose = TownScreen.stringValue(project, "purpose");
+            if (!purpose.isBlank()) {
+                for (String line : TownScreen.wrapText(purpose, contentWidth, font)) {
+                    labels.add(new TextLine(line, contentLeft, y, TownStyle.TEXT));
+                    y += 13;
+                }
+                y += 8;
+            }
+            separators.add(y); y += 10;
+        }
         for (String text : description) {
             for (String line : TownScreen.wrapText(text, contentWidth, font)) {
-                labels.add(new TextLine(line, contentLeft, y, TownStyle.MUTED));
+                labels.add(new TextLine(line, contentLeft, y, project != null && text.startsWith(TownText.text("yat.label.repair_needed")) ? TownStyle.DANGER : TownStyle.MUTED));
                 y += 13;
             }
             y += 7;
@@ -173,14 +208,28 @@ final class TownForm extends Screen {
             index += pair ? 2 : 1;
             y += 26;
         }
+        for (JsonObject town : towns) {
+            townCards.add(new TownCard(town, contentLeft, y, contentWidth));
+            Button select = TownStyle.button(TownText.text("yat.ui.select"), contentLeft + contentWidth - 52, y + 8, 44, () -> {
+                if (submitting || !validContext()) return;
+                values.put("townId", TownScreen.stringValue(town, "id"));
+                values.put("password", "");
+                scroll = 0;
+                rebuild();
+                focusControl(fieldWidgets.get(TownScreen.bool(town, "passwordEnabled") ? "password" : "townId"));
+            });
+            select.active = !submitting;
+            addContentWidget(select);
+            y += 58;
+        }
         maximumScroll = Math.max(0, y + scroll - bodyBottom);
         if (scroll > maximumScroll) { scroll = maximumScroll; rebuild(); return; }
         int bottom = window.bottom() - 29;
         int buttonWidth = Math.min(128, (contentWidth - 8) / 2);
-        Button cancel = addControl(TownStyle.button(discardConfirmation ? "继续编辑" : submit == null ? "返回" : "取消", contentLeft, bottom, buttonWidth, this::onClose));
+        Button cancel = addControl(TownStyle.button(discardConfirmation ? TownText.text("yat.ui.keep_editing") : submit == null ? TownText.text("yat.ui.back") : TownText.text("yat.ui.cancel"), contentLeft, bottom, buttonWidth, this::onClose));
         cancel.active = !submitting;
         if (submit != null) {
-            Button save = addControl(TownStyle.button(submitting ? "正在提交…" : discardConfirmation ? "放弃修改" : "确认提交", contentLeft + contentWidth - buttonWidth, bottom, buttonWidth, this::save));
+            Button save = addControl(TownStyle.button(submitting ? TownText.text("yat.status.submitting") : discardConfirmation ? TownText.text("yat.ui.discard_changes") : TownText.text("yat.ui.confirm_submit"), contentLeft + contentWidth - buttonWidth, bottom, buttonWidth, this::save));
             save.active = !submitting;
         }
         if (focusedIndex >= 0 && focusedIndex < focusOrder.size()) {
@@ -239,13 +288,13 @@ final class TownForm extends Screen {
     }
 
     private String choiceLabel(Field field, int index) {
-        if (index < 0) return "暂无可选项";
+        if (index < 0) return TownText.text("yat.empty.options");
         return field.labels() != null && index < field.labels().length ? field.labels()[index] : field.values()[index];
     }
 
     private Tooltip choiceTooltip(Field field, int index) {
         String hint = field.label() + "：" + choiceLabel(field, index);
-        if (field.values().length > 1) hint += "（" + (index + 1) + "/" + field.values().length + "）\n单击下一项 · Shift + 左键上一项\n聚焦后可用 ← / → 选择";
+        if (field.values().length > 1) hint += "（" + (index + 1) + "/" + field.values().length + TownText.text("yat.hint.cycle_options");
         return Tooltip.create(Component.literal(hint));
     }
 
@@ -260,7 +309,7 @@ final class TownForm extends Screen {
 
     static int parseNumber(String label, String value) {
         try { return Integer.parseInt(value.strip()); }
-        catch (NumberFormatException exception) { throw new NumberFormatException(label + "必须填写有效整数"); }
+        catch (NumberFormatException exception) { throw new NumberFormatException(TownText.text("yat.error.field_integer", label)); }
     }
 
     private <T extends AbstractWidget> T addControl(T widget) {
@@ -317,12 +366,20 @@ final class TownForm extends Screen {
 
     private boolean validContext() {
         if (TownGateway.get().isCurrent(context)) return true;
-        error = "身份或小镇/周目已变化，请返回后重新打开";
+        error = TownText.text("yat.error.context_changed");
         return false;
     }
 
     static void track(CompletableFuture<?> request) {
-        if (!(VersionClient.currentScreen() instanceof TownForm form)) return;
+        Screen origin = VersionClient.currentScreen();
+        TownGateway.Context context = TownGateway.get().context();
+        if (!(origin instanceof TownForm form)) {
+            request.whenComplete((ignored, failure) -> net.minecraft.client.Minecraft.getInstance().execute(() -> {
+                if (failure != null && VersionClient.currentScreen() == origin && TownGateway.get().isCurrent(context))
+                    showError(origin, TownGateway.get().status);
+            }));
+            return;
+        }
         form.submitting = true;
         form.error = "";
         form.rebuild();
@@ -333,13 +390,19 @@ final class TownForm extends Screen {
         }));
     }
 
+    static void showError(Screen parent, String message) {
+        VersionClient.show(new TownForm(parent, TownText.text("yat.error.operation_failed"), List.of(), List.of(message), List.of(), null));
+    }
+
     private void moveScroll(int amount) {
         int target = Math.max(0, Math.min(maximumScroll, scroll + amount));
         if (target == scroll) return;
         int offset = scroll - target;
         scroll = target;
+        projectHeaderY += offset;
         labels.replaceAll(line -> new TextLine(line.value(), line.x(), line.y() + offset, line.color()));
         separators.replaceAll(y -> y + offset);
+        townCards.replaceAll(card -> new TownCard(card.town(), card.x(), card.y() + offset, card.width()));
         for (AbstractWidget widget : contentWidgets) {
             widget.setY(widget.getY() + offset);
             widget.visible = widget.getY() >= bodyTop && widget.getY() + widget.getHeight() <= bodyBottom;
@@ -403,7 +466,7 @@ final class TownForm extends Screen {
         if (submitting) return;
         if (submit != null && fields.stream().anyMatch(field -> !field.initial().equals(values.get(field.key())))) {
             returningFocusIndex = focusOrder.indexOf(getFocused());
-            TownForm confirmation = new TownForm(this, "放弃未提交的修改", List.of(), List.of("输入尚未提交，放弃后将丢失本次修改。"), List.of(), ignored -> VersionClient.show(parent));
+            TownForm confirmation = new TownForm(this, TownText.text("yat.title.discard_unsubmitted"), List.of(), List.of(TownText.text("yat.confirm.discard_unsubmitted")), List.of(), ignored -> VersionClient.show(parent));
             confirmation.discardConfirmation = true;
             VersionClient.show(confirmation);
         } else VersionClient.show(parent);
@@ -415,18 +478,32 @@ final class TownForm extends Screen {
         TownStyle.background(graphics, width, height);
         TownStyle.window(graphics, window, bodyTop, bodyBottom);
         String feedback = !TownGateway.get().status.equals(initialStatus) ? TownGateway.get().status : "";
-        String status = submitting ? "正在提交…" : error.isBlank() ? feedback : error;
+        String status = submitting ? TownText.text("yat.status.submitting") : error.isBlank() ? feedback : error;
         TownStyle.heading(graphics, font, TownStyle.title() + (breadcrumbTitle ? " · " + title.getString() : ""), left + 16, window.top() + 10, panelWidth - 68);
-        if (!breadcrumbTitle) {
-            if (titleIcon != null) VersionClient.drawLogo(graphics, titleIcon, left + 12, window.top() + 25, 20);
-            graphics.text(font, font.plainSubstrByWidth(title.getString(), panelWidth - (titleIcon == null ? 32 : 46)), left + (titleIcon == null ? 16 : 30), window.top() + 29, titleColor, false);
+        if (!breadcrumbTitle && project == null) {
+            graphics.text(font, font.plainSubstrByWidth(title.getString(), panelWidth - 32), left + 16, window.top() + 29, TownStyle.FRAME_TEXT, false);
         }
         graphics.enableScissor(left + 12, bodyTop, left + panelWidth - 12, bodyBottom);
+        if (project != null) {
+            VersionClient.drawAvatar(graphics, TownScreen.stringValue(project, "leaderId"), projectOwner, left + 16, projectHeaderY, 24);
+            VersionClient.drawLogo(graphics, ProjectHighlighter.projectIcon(TownScreen.stringValue(project, "type")), left + 46, TownStyle.centeredY(projectHeaderY + 1, font.lineHeight, 12), 12);
+        }
+        for (TownCard card : townCards) {
+            JsonObject town = card.town();
+            TownStyle.panel(graphics, card.x(), card.y(), card.width(), 52, false);
+            VersionClient.drawLogo(graphics, TownScreen.stringValue(town, "logo", "minecraft:oak_sapling"), card.x() + 8, card.y() + 7, 24);
+            graphics.text(font, font.plainSubstrByWidth(TownScreen.stringValue(town, "name"), card.width() - 100), card.x() + 40, card.y() + 7, TownStyle.TEXT, false);
+            graphics.text(font, "ID " + TownScreen.stringValue(town, "id"), card.x() + 40, card.y() + 21, TownStyle.ACCENT, false);
+            String introduction = TownScreen.singleLine(TownScreen.stringValue(town, "introduction"));
+            graphics.text(font, font.plainSubstrByWidth(introduction, card.width() - 16), card.x() + 8, card.y() + 38, TownStyle.MUTED, false);
+            if (font.width(introduction) > card.width() - 16 && mouseX >= card.x() && mouseX < card.x() + card.width() && mouseY >= Math.max(bodyTop, card.y() + 34) && mouseY < Math.min(bodyBottom, card.y() + 51))
+                graphics.setTooltipForNextFrame(Component.literal(introduction), mouseX, mouseY);
+        }
         for (int y : separators) graphics.fill(left + 16, y, left + panelWidth - 16, y + 1, TownStyle.LINE);
         for (TextLine label : labels) graphics.text(font, label.value(), label.x(), label.y(), label.color(), false);
         for (Field field : fields) if (field.icon()) {
             AbstractWidget input = fieldWidgets.get(field.key());
-            if (input != null && input.visible) VersionClient.drawLogo(graphics, values.get(field.key()), input.getX() + input.getWidth() + 6, input.getY() - 6, 32);
+            if (input != null && input.visible) VersionClient.drawLogo(graphics, values.get(field.key()), input.getX() + input.getWidth() + 10, TownStyle.centeredY(input.getY(), input.getHeight(), 24), 24);
         }
         graphics.disableScissor();
         super.extractRenderState(graphics, mouseX, mouseY, delta);

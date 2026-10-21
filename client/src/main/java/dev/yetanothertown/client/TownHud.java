@@ -51,7 +51,7 @@ public final class TownHud {
         long now = System.nanoTime();
         if (entry.enter(id, now, gateway.config().entryCooldownSeconds * 1_000_000_000L)) {
             entrySubtitle = true;
-            subtitle = "进入项目：" + XaeroBridge.projectName(currentProject);
+            subtitle = TownText.text("yat.hud.project_entry") + XaeroBridge.projectName(currentProject);
             subtitleUntil = now + gateway.config().entrySubtitleSeconds * 1_000_000_000L;
         } else if (entrySubtitle && !id.equals(entry.announced)) subtitleUntil = 0;
     }
@@ -92,7 +92,7 @@ public final class TownHud {
         tick();
         if (currentProject != null) TownScreen.openProject(VersionClient.currentScreen(), currentProject);
         else {
-            TownGateway.get().status = "当前所在区块没有可查看的项目";
+            TownGateway.get().status = TownText.text("yat.hint.no_project_here");
             entrySubtitle = false;
             subtitle = TownGateway.get().status;
             subtitleUntil = System.nanoTime() + TownGateway.get().config().entrySubtitleSeconds * 1_000_000_000L;
@@ -111,7 +111,7 @@ public final class TownHud {
                 graphics.text(client.font, title, (graphics.guiWidth() - client.font.width(title)) / 2, y, alpha << 24 | 0xFFFFFF, true);
                 if (entrySubtitle && currentProject != null) {
                     String key = VersionClient.projectKeyLabel();
-                    String hint = key.isEmpty() ? "可在按键设置中绑定项目详情键" : "按 " + key + " 查看项目详情";
+                    String hint = key.isEmpty() ? TownText.text("yat.hint.bind_project_details") : TownText.text("yat.hint.project_key", key);
                     hint = client.font.plainSubstrByWidth(hint, Math.max(0, graphics.guiWidth() - 32));
                     graphics.text(client.font, hint, (graphics.guiWidth() - client.font.width(hint)) / 2, y + 15, alpha << 24 | 0xD6A45D, true);
                 }
@@ -121,12 +121,12 @@ public final class TownHud {
         if (target == null) return;
         String name = VersionClient.navigationName(target);
         String instruction;
-        if (!stringValue(target, "dimension").equals(VersionClient.dimension())) instruction = "目标维度 " + stringValue(target, "dimension");
+        if (!stringValue(target, "dimension").equals(VersionClient.dimension())) instruction = TownText.text("yat.hud.target_dimension") + stringValue(target, "dimension");
         else {
             double dx = integer(target, "x") - client.player.getX(), dz = integer(target, "z") - client.player.getZ();
             double degrees = Math.toDegrees(Math.atan2(-dx, dz));
             double angle = ((degrees - client.player.getYRot()) % 360 + 540) % 360 - 180;
-            String direction = Math.abs(angle) <= 20 ? "↑ 前方" : Math.abs(angle) >= 160 ? "↓ 后方" : angle < 0 ? "← 左侧" : "→ 右侧";
+            String direction = Math.abs(angle) <= 20 ? TownText.text("yat.hud.ahead") : Math.abs(angle) >= 160 ? TownText.text("yat.hud.behind") : angle < 0 ? TownText.text("yat.hud.left") : TownText.text("yat.hud.right");
             instruction = direction + " · " + Math.round(Math.hypot(dx, dz)) + "m";
         }
         int width = Math.min(218, graphics.guiWidth() / 2 - 12);

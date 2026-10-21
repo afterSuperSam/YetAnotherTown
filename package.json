@@ -1,6 +1,6 @@
 {
   "name": "yetanothertown",
-  "version": "1.0.0-alpha.16",
+  "version": "1.0.0-beta",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,5 +10,7 @@
     "check:compat": "node tools/build.mjs compatibility",
     "build": "node tools/build.mjs build"
   },
-  "engines": { "node": ">=24" }
+  "engines": {
+    "node": ">=24"
+  }
 }

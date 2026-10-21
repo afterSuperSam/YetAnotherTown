@@ -1,23 +1,43 @@
 {
   "schemaVersion": 1,
   "id": "yetanothertown",
-  "version": "1.0.0-alpha.16",
+  "version": "1.0.0-beta",
   "name": "Yet Another Town",
-  "description": "Xaero 原生地图项目登记、区域介绍与维护报修",
-  "mixins": ["yetanothertown.mixins.json"],
-  "authors": ["Sam"],
+  "description": "Town projects, area information and maintenance reports on the native Xaero world map. Requires an external town service.",
+  "mixins": [
+    "yetanothertown.mixins.json"
+  ],
+  "authors": [
+    "Sam"
+  ],
   "environment": "client",
   "entrypoints": {
-    "client": ["dev.yetanothertown.Bootstrap"],
-    "modmenu": ["dev.yetanothertown.ModMenuIntegration"]
+    "client": [
+      "dev.yetanothertown.Bootstrap"
+    ],
+    "modmenu": [
+      "dev.yetanothertown.ModMenuIntegration"
+    ]
   },
-  "suggests": {"modmenu": "*"},
+  "suggests": {
+    "modmenu": "*"
+  },
   "depends": {
     "fabricloader": ">=0.19.3",
     "java": ">=25",
-    "minecraft": ["26.1.2", "26.2", "26.3"],
+    "minecraft": [
+      "26.1.2",
+      "26.2",
+      "26.3"
+    ],
     "fabric-api": ">=0.155.0",
     "xaeroworldmap": ">=1.45.0",
     "xaerominimap": ">=26.4.2"
-  }
+  },
+  "contact": {
+    "homepage": "https://github.com/afterSuperSam/YetAnotherTown",
+    "sources": "https://github.com/afterSuperSam/YetAnotherTown",
+    "issues": "https://github.com/afterSuperSam/YetAnotherTown/issues"
+  },
+  "icon": "assets/yetanothertown/icon.png"
 }

@@ -29,7 +29,10 @@ const javac = executable('javac');
 const jar = executable('jar');
 const java = executable('java');
 await access(javac);
-for (const directory of ['server/src', 'server/test']) {
+let serviceAvailable = true;
+try { await access(path.join(root, 'server/package.json')); }
+catch (error) { if (error.code === 'ENOENT') serviceAvailable = false; else throw error; }
+for (const directory of serviceAvailable ? ['server/src', 'server/test'] : []) {
   for (const source of await files(path.join(root, directory), '.mjs')) await run(process.execPath, ['--check', source]);
 }
 const dependencies = await prepare(mode === 'compatibility');
@@ -64,6 +67,31 @@ await rm(classes, { recursive: true, force: true });
 await mkdir(classes, { recursive: true });
 const sourceFiles = [...await files(sourceRoot), ...await files(path.join(root, 'compat'))];
 if (!sourceFiles.some(file => file.endsWith('VersionClient.java'))) throw new Error('Client source is incomplete: VersionClient.java missing');
+// 语言文件是界面文案来源；发布前核对键、占位符与服务错误协议。
+const languageDirectory = path.join(root, 'client/src/main/resources/assets/yetanothertown/lang');
+const english = JSON.parse(await readFile(path.join(languageDirectory, 'en_us.json'), 'utf8'));
+const serviceLanguages = serviceAvailable ? JSON.parse(await readFile(path.join(root, 'server/src/translations.json'), 'utf8')) : {};
+const placeholders = text => [...text.matchAll(/%(?:\d+\$)?s/g)].length;
+for (const file of await files(languageDirectory, '.json')) {
+  const translations = JSON.parse(await readFile(file, 'utf8'));
+  for (const [key, value] of Object.entries(translations)) {
+    if (!(key in english) || typeof value !== 'string' || placeholders(value) !== placeholders(english[key])) throw new Error(`Invalid translation: ${file}: ${key}`);
+  }
+  if (file.endsWith('zh_cn.json') && Object.keys(translations).length !== Object.keys(english).length) throw new Error('Chinese and English translation keys differ');
+  for (const [key, value] of Object.entries(serviceLanguages[path.basename(file, '.json')] ?? {})) {
+    if (translations[key] !== value) throw new Error(`Service translation mismatch: ${key}`);
+  }
+}
+for (const source of sourceFiles) {
+  for (const match of (await readFile(source, 'utf8')).matchAll(/TownText\.text\("([^"]+)"/g)) {
+    if (!(match[1] in english)) throw new Error(`Missing translation: ${match[1]}`);
+  }
+}
+const releaseVersion = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;
+for (const file of [...(serviceAvailable ? ['server/package.json'] : []), 'client/src/main/resources/fabric.mod.json']) {
+  if (JSON.parse(await readFile(path.join(root, file), 'utf8')).version !== releaseVersion) throw new Error(`Version mismatch: ${file}`);
+}
+console.log(`Translations verified: ${Object.keys(english).length} keys`);
 const classpaths = {};
 for (const version of versions) {
   const descriptor = dependencies[version];
@@ -93,7 +121,7 @@ const bootstrap = await files(path.join(root, 'bootstrap', 'src', 'main', 'java'
 await run(javac, ['--release', '25', '-encoding', 'UTF-8', '-proc:none', '-cp', classpaths[versions[0]].join(path.delimiter), '-d', classes, ...bootstrap]);
 await cp(path.join(root, 'client', 'src', 'main', 'resources'), classes, { recursive: true });
 const metadata = JSON.parse(await readFile(path.join(classes, 'fabric.mod.json'), 'utf8'));
-const artifactVersion = metadata.version.replace(/-alpha\.(\d+)$/, 'alpha$1');
+const artifactVersion = metadata.version.replace(/-alpha\.(\d+)$/, 'alpha$1').replace(/-beta$/, 'beta');
 const artifact = path.join(build, 'libs', `yetanothertown-${artifactVersion}.jar`);
 await mkdir(path.dirname(artifact), { recursive: true });
 await run(jar, ['--create', '--file', artifact, '--date=2026-10-18T00:00:00Z', '-C', classes, '.']);
@@ -123,13 +151,14 @@ if (mode === 'compatibility') {
   }
 }
 if (mode === 'test' || mode === 'client-test' || mode === 'compatibility') {
-  if (mode === 'test') console.log(await run(process.execPath, ['--test', 'server/test/service.test.mjs']));
+  if (mode === 'test' && serviceAvailable) console.log(await run(process.execPath, ['--test', 'server/test/service.test.mjs']));
+  if (mode === 'test' && !serviceAvailable) console.log('Client-only checkout: private service tests are not included');
   const tests = await files(path.join(root, 'client', 'src', 'test', 'java'));
   const testClasses = path.join(build, 'test-classes');
   await mkdir(testClasses, { recursive: true });
   const gateway = sourceFiles.find(file => file.endsWith('TownGateway.java'));
   const classpath = [classes, ...classpaths[versions[0]]].join(path.delimiter);
-  await run(javac, ['--release', '25', '--add-modules', 'jdk.httpserver', '-encoding', 'UTF-8', '-proc:none', '-cp', classpath, '-d', testClasses, gateway, ...tests.filter(source => source.endsWith('TownGatewayTest.java'))]);
+  await run(javac, ['--release', '25', '--add-modules', 'jdk.httpserver', '-encoding', 'UTF-8', '-proc:none', '-cp', classpath, '-d', testClasses, gateway, sourceFiles.find(file => file.endsWith('TownText.java')), ...tests.filter(source => source.endsWith('TownGatewayTest.java'))]);
   console.log(await run(java, ['--add-modules', 'jdk.httpserver', '-ea', '-cp', testClasses + path.delimiter + classpath, 'dev.yetanothertown.client.TownGatewayTest']));
   const keyboardTest = tests.find(source => source.endsWith('TownInputTest.java'));
   for (const version of versions) {

@@ -11,7 +11,7 @@ public final class Bootstrap implements ClientModInitializer {
             Class.forName("dev.yetanothertown." + adapter() + ".VersionClient")
                     .getMethod("initialize").invoke(null);
         } catch (ReflectiveOperationException exception) {
-            throw new IllegalStateException("Yet Another Town 客户端初始化失败", exception);
+            throw new IllegalStateException("Yet Another Town client initialization failed.", exception);
         }
     }
 
@@ -22,7 +22,7 @@ public final class Bootstrap implements ClientModInitializer {
             case "26.3" -> "v263";
             case "26.2" -> "v262";
             case "26.1.2" -> "v2612";
-            default -> throw new IllegalStateException("Yet Another Town 不支持当前 Minecraft 版本：" + version);
+            default -> throw new IllegalStateException("Yet Another Town does not support this Minecraft version: " + version);
         };
     }
 
@@ -33,7 +33,7 @@ public final class Bootstrap implements ClientModInitializer {
             java.util.Arrays.fill(parameters, Object.class);
             Class.forName("dev.yetanothertown." + adapter() + ".XaeroBridge").getMethod(method, parameters).invoke(null, arguments);
         } catch (ReflectiveOperationException exception) {
-            throw new IllegalStateException("Xaero 地图扩展接口不兼容：" + method, exception);
+            throw new IllegalStateException("Incompatible Xaero map extension API: " + method, exception);
         }
     }
 }
