@@ -53,25 +53,6 @@ public final class TownInputTest {
         require(!XaeroBridge.associationBlockReason(activeWorld, true, "minecraft:overworld", "minecraft:the_nether", "town", "town").isEmpty(), "Browsing another dimension must not associate it as the player's current map");
         require(!XaeroBridge.associationBlockReason(activeWorld, true, "minecraft:overworld", "minecraft:overworld", "town", "history").isEmpty(), "An unsettled native map selection must not associate a different displayed map");
         require(!XaeroBridge.associationBlockReason(new com.google.gson.JsonObject(), true, "minecraft:overworld", "minecraft:overworld", "town", "town").isEmpty(), "Missing selected-world metadata must not bypass historical protection");
-        TownGateway mapGateway = TownGateway.get();
-        String oldTown = mapGateway.townId, oldWorld = mapGateway.worldId;
-        var oldSnapshot = mapGateway.snapshot;
-        mapGateway.townId = "12345678"; mapGateway.worldId = "0123456789abcdef01234567";
-        JsonArray mapPermissions = new JsonArray(); mapPermissions.add("project.create");
-        mapGateway.snapshot = TownGateway.object("permissions", mapPermissions, "projects", new JsonArray());
-        var associationSnapshot = mapGateway.snapshot;
-        var associationContext = mapGateway.context();
-        try {
-            require(XaeroBridge.saveAssociation(mapGateway, "minecraft:overworld", "test-server|town", () -> true), "Successful native confirmation must save the current map in one step");
-            require(mapGateway.snapshot == associationSnapshot && mapGateway.isCurrent(associationContext), "Map association must preserve permissions, projects, and the selected-world context");
-            require(mapGateway.getBoundMapKey("minecraft:overworld").equals("test-server|town"), "Successful association must retain the confirmed map key");
-            require(!XaeroBridge.saveAssociation(mapGateway, "minecraft:overworld", "test-server|other", () -> false), "A native confirmation that did not establish the player map must not report success");
-            require(mapGateway.getBoundMapKey("minecraft:overworld").equals("test-server|town") && mapGateway.snapshot == associationSnapshot, "Failed native confirmation must restore the previous map without clearing permissions");
-            require(!XaeroBridge.saveAssociation(mapGateway, "minecraft:the_nether", "test-server|nether", () -> false) && mapGateway.getBoundMapKey("minecraft:the_nether").isEmpty(), "Failed first association must not leave an unusable binding behind");
-        } finally {
-            mapGateway.unbindMap("minecraft:overworld");
-            mapGateway.townId = oldTown; mapGateway.worldId = oldWorld; mapGateway.snapshot = oldSnapshot;
-        }
         KeyMapping[] mappings = VersionClient.createKeyMappings();
         KeyMapping.click(InputConstants.getKey("key.keyboard.k"));
         require(mappings[0].consumeClick(), "Physical K did not reach the town menu mapping");
@@ -231,6 +212,38 @@ public final class TownInputTest {
         Class<?> levelType = nativeFixtureType("Level", net.minecraft.client.multiplayer.ClientLevel.class, null);
         Class<?> worldType = nativeFixtureType("World", xaero.map.world.MapWorld.class, "saveConfig");
         Class<?> dimensionType = nativeFixtureType("Dimension", xaero.map.world.MapDimension.class, "saveConfigUnsynced");
+        NativeFixture named = nativeFixture(1, false, levelType, worldType, dimensionType);
+        TownGateway gateway = TownGateway.get();
+        String previousTown = gateway.townId, previousWorld = gateway.worldId;
+        JsonObject previousSnapshot = gateway.snapshot;
+        Object previousToken = nativeField(gateway, TownGateway.class, "token");
+        var previousBindings = new java.util.TreeMap<>(gateway.config().mapBindings);
+        try {
+            gateway.townId = "12345678"; gateway.worldId = "0123456789abcdef01234567";
+            nativeField(gateway, TownGateway.class, "token", "native-map-name-test");
+            JsonObject world = TownGateway.object("id", gateway.worldId, "serverAddress", "singleplayer", "archived", false, "mapName", "小镇周目");
+            JsonArray worlds = new JsonArray(); worlds.add(world);
+            gateway.snapshot = TownGateway.object("town", TownGateway.object("currentWorldId", gateway.worldId), "worlds", worlds);
+            var mapNames = new java.util.Hashtable<String, String>(); mapNames.put("cm$town", "小镇周目");
+            nativeField(named.dimension(), xaero.map.world.MapDimension.class, "multiworldNames", mapNames);
+            require(XaeroBridge.resolvedMapKey(named.dimension()).equals("test-server|cm$town"), "The actual native shared map name must resolve without a personal binding");
+            mapNames.put("cm$town", " 小镇周目 ");
+            require(XaeroBridge.resolvedMapKey(named.dimension()).equals("test-server|cm$town"), "Native map names must use the same whitespace normalization as the service");
+            String binding = gateway.config().endpoint + "#" + gateway.townId + "/" + gateway.worldId + "/minecraft:overworld";
+            gateway.config().mapBindings.put(binding, "test-server|cm$town");
+            mapNames.put("cm$town", "其他周目");
+            require(XaeroBridge.resolvedMapKey(named.dimension()).isEmpty(), "A stale personal cache must not override a renamed native map");
+            world.add("mapNames", TownGateway.object("minecraft:overworld", "其他周目"));
+            require(XaeroBridge.resolvedMapKey(named.dimension()).equals("test-server|cm$town"), "An explicit dimension name must override the shared default name");
+            world.addProperty("archived", true);
+            require(XaeroBridge.resolvedMapKey(named.dimension()).equals("test-server|cm$town"), "Archived maps must retain their personal historical association");
+            gateway.config().mapBindings.remove(binding);
+            require(XaeroBridge.resolvedMapKey(named.dimension()).isEmpty(), "Shared names must never infer an unbound historical map");
+        } finally {
+            gateway.townId = previousTown; gateway.worldId = previousWorld; gateway.snapshot = previousSnapshot;
+            nativeField(gateway, TownGateway.class, "token", previousToken);
+            gateway.config().mapBindings.clear(); gateway.config().mapBindings.putAll(previousBindings);
+        }
         for (int mode = 0; mode < 3; mode++) for (boolean serverId : new boolean[]{false, true}) {
             NativeFixture fixture = nativeFixture(mode, serverId, levelType, worldType, dimensionType);
             require(XaeroBridge.confirmAssociation(fixture.processor(), fixture.dimension(), "test-server|cm$town"), "One-step native association must work in every mode: " + mode + "/" + serverId);
@@ -238,6 +251,11 @@ public final class TownInputTest {
             require(nativeField(fixture.world(), xaero.map.world.MapWorld.class, "futureMultiworldType").equals(mode == 0 && !serverId ? 1 : mode), "Only conflicting Single mode may change; existing Manual, Spawn and server-controlled modes must remain unchanged");
         }
         NativeFixture matching = nativeFixture(0, false, levelType, worldType, dimensionType);
+        Object previousSuspended = nativeField(null, XaeroBridge.class, "suspendedMap");
+        try {
+            nativeField(null, XaeroBridge.class, "suspendedMap", allocateNative(Class.forName(XaeroBridge.class.getName() + "$BoundMap")));
+            require(XaeroBridge.currentMapSetupBlockReason().contains("关闭历史地图"), "A suspended historical map must not be published as the player's current map");
+        } finally { nativeField(null, XaeroBridge.class, "suspendedMap", previousSuspended); }
         String automatic = matching.world().getPlayerMapKey().getMw();
         nativeField(matching.dimension(), xaero.map.world.MapDimension.class, "currentMultiworld", automatic);
         nativeField(matching.dimension(), xaero.map.world.MapDimension.class, "futureCustomSelectedMultiworld", automatic);

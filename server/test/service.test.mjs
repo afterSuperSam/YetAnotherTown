@@ -62,6 +62,7 @@ test('指定周目快照只报告同周目工程的区块重叠', async t => {
   const second = { ...structuredClone(first), id: 'historical-overlap' };
   f.service.state.towns[f.townId].projects.push(second);
   const otherWorld = await f.call('world.create', { townId: f.townId, name: '新周目' });
+  await f.call('world.activate', { townId: f.townId, worldId: otherWorld.id, serverAddress: 'example.test', mapName: '新地图', dimension: position.dimension });
   await f.project({ worldId: otherWorld.id, name: '其他周目重叠' });
   const snapshot = await f.call('town.snapshot', { townId: f.townId, worldId: f.worldId });
   assert.deepEqual(snapshot.projects.map(project => [project.id, project.overlapIds]), [[first.id, [second.id]], [second.id, [first.id]]]);
@@ -292,10 +293,135 @@ test('周目隔离与归档保护覆盖工程和维修', async t => {
   const ticket = await f.call('ticket.create', { townId: f.townId, worldId: f.worldId, projectId: project.id, ...position, title: '维修' });
   const next = await f.call('world.create', { townId: f.townId, name: '第二周目', worldKey: 'world-2' });
   await rejects(f.call('ticket.create', { townId: f.townId, worldId: next.id, projectId: project.id, ...position, title: '跨周目' }), 'invalid_argument');
+  await f.call('world.activate', { townId: f.townId, worldId: next.id, serverAddress: 'example.test', mapName: '第二周目地图', dimension: position.dimension });
   await f.call('world.archive', { townId: f.townId, worldId: f.worldId });
   for (const [action, payload] of [['project.update', { id: project.id, name: '改名' }], ['project.status', { id: project.id, status: 'active' }], ['ticket.update', { id: ticket.id, status: 'working' }], ['ticket.create', { projectId: project.id, ...position, title: '新增' }]]) await rejects(f.call(action, { townId: f.townId, ...payload }), 'archived');
   assert.equal((await f.call('town.snapshot', { townId: f.townId, worldId: next.id })).projects.length, 0);
   assert.equal((await f.call('town.snapshot', { townId: f.townId, worldId: f.worldId })).projects.length, 1);
+});
+
+test('镇长设置共享当前周目，地图名称按维度合并并保留默认名称', async t => {
+  const f = await fixture(t);
+  const initial = await f.snapshot();
+  assert.equal(initial.town.currentWorldId, f.worldId);
+  assert.equal(initial.worlds[0].mapName, undefined);
+  const activate = (worldId, mapName, dimension = position.dimension, serverAddress = 'example.test') => f.call('world.activate', { townId: f.townId, worldId, serverAddress, mapName, dimension });
+  await activate(f.worldId, '主世界地图');
+  await activate(f.worldId, '下界地图', 'minecraft:the_nether');
+  const merged = await activate(f.worldId, '末地地图', 'minecraft:the_end');
+  assert.equal(merged.mapName, '主世界地图');
+  assert.deepEqual(merged.mapNames, { 'minecraft:overworld': '主世界地图', 'minecraft:the_nether': '下界地图', 'minecraft:the_end': '末地地图' });
+  await activate(f.worldId, '新下界地图', 'minecraft:the_nether');
+  assert.equal((await f.snapshot()).worlds[0].mapNames['minecraft:the_nether'], '新下界地图');
+  const next = await f.call('world.create', { townId: f.townId, name: '第二周目' });
+  await activate(next.id, '第二周目地图');
+  assert.equal((await f.snapshot()).town.currentWorldId, next.id);
+  const selected = await activate(f.worldId, '重新选择的地图');
+  assert.equal(selected.mapName, '重新选择的地图');
+  assert.equal(selected.mapNames['minecraft:the_nether'], '新下界地图');
+  const changedServer = await activate(f.worldId, '另一服务器地图', position.dimension, 'other.test');
+  assert.equal(changedServer.serverAddress, 'other.test');
+  assert.equal(changedServer.mapName, '另一服务器地图');
+  assert.deepEqual(changedServer.mapNames, { 'minecraft:overworld': '另一服务器地图' });
+  const reloaded = await new TownService({ store: f.store }).initialize();
+  assert.deepEqual((await reloaded.handle('town.snapshot', { townId: f.townId }, f.alice.token)).worlds, (await f.snapshot()).worlds);
+});
+
+test('共享当前周目仅真实镇长可设置，管理和自定义权限组均不能代替', async t => {
+  const f = await fixture(t); const bob = await f.join(); const carol = await f.join('Carol');
+  const payload = { townId: f.townId, worldId: f.worldId, serverAddress: 'example.test', mapName: '共享地图', dimension: position.dimension };
+  await rejects(f.call('world.activate', payload, bob.token), 'forbidden');
+  await f.call('member.role', { townId: f.townId, playerId: bob.player.id, roleId: 'manager' });
+  await rejects(f.call('world.activate', payload, bob.token), 'forbidden');
+  const role = await f.call('role.save', { townId: f.townId, name: '周目管理', permissions: ['worlds.manage'] });
+  await f.call('member.role', { townId: f.townId, playerId: carol.player.id, roleId: role.id });
+  await rejects(f.call('world.activate', payload, carol.token), 'forbidden');
+  await f.call('town.transfer', { townId: f.townId, playerId: bob.player.id });
+  await rejects(f.call('world.activate', payload), 'forbidden');
+  await f.call('world.activate', payload, bob.token);
+  assert.equal((await f.snapshot()).worlds[0].mapName, '共享地图');
+});
+
+test('当前周目必须先切换才能归档，已归档周目不能重新设为当前', async t => {
+  const f = await fixture(t);
+  await assert.rejects(f.call('world.archive', { townId: f.townId, worldId: f.worldId }), error => error instanceof ApiError && error.code === 'conflict' && /先选择其他当前周目/.test(error.message));
+  assert.equal((await f.snapshot()).worlds[0].archived, false);
+  const next = await f.call('world.create', { townId: f.townId, name: '新周目' });
+  await f.call('world.activate', { townId: f.townId, worldId: next.id, serverAddress: 'example.test', mapName: '新地图', dimension: position.dimension });
+  await f.call('world.archive', { townId: f.townId, worldId: f.worldId });
+  await rejects(f.call('world.activate', { townId: f.townId, worldId: f.worldId, serverAddress: 'example.test', mapName: '旧地图', dimension: position.dimension }), 'archived');
+  assert.equal((await f.snapshot()).town.currentWorldId, next.id);
+});
+
+test('镇长切换当前周目后拒绝旧快照新增工程，原有工程仍可维护且新周目支持多维度', async t => {
+  const f = await fixture(t);
+  const original = await f.project();
+  const next = await f.call('world.create', { townId: f.townId, name: '新周目' });
+  await f.call('world.activate', { townId: f.townId, worldId: next.id, serverAddress: 'example.test', mapName: '新地图', dimension: position.dimension });
+  const before = await readFile(f.store.file, 'utf8');
+  await assert.rejects(f.project({ chunks: { minX: 10, maxX: 10, minZ: 10, maxZ: 10 } }), error => error instanceof ApiError && error.code === 'conflict' && /当前周目已变化/.test(error.message));
+  assert.equal(await readFile(f.store.file, 'utf8'), before);
+  const updated = await f.call('project.update', { townId: f.townId, id: original.id, purpose: '补充历史记录' });
+  assert.equal(updated.purpose, '补充历史记录');
+  await f.project({ worldId: next.id });
+  await f.project({ worldId: next.id, dimension: 'minecraft:the_nether' });
+  assert.equal((await f.call('town.snapshot', { townId: f.townId, worldId: next.id })).projects.length, 2);
+});
+
+test('周目资料修改保护当前服务器身份，服务器变更清空地图并要求镇长确认', async t => {
+  const f = await fixture(t); const bob = await f.join();
+  await f.call('member.role', { townId: f.townId, playerId: bob.player.id, roleId: 'manager' });
+  const activation = { townId: f.townId, worldId: f.worldId, serverAddress: 'example.test', mapName: '共享地图', dimension: position.dimension };
+  await f.call('world.activate', activation);
+  const metadata = await f.call('world.update', { townId: f.townId, id: f.worldId, name: '新名称', serverAddress: 'example.test' }, bob.token);
+  assert.equal(metadata.mapName, '共享地图');
+  await rejects(f.call('world.update', { townId: f.townId, id: f.worldId, serverAddress: 'other.test' }, bob.token), 'forbidden');
+  assert.equal((await f.snapshot()).worlds[0].serverAddress, 'example.test');
+  const cleared = await f.call('world.update', { townId: f.townId, id: f.worldId, serverAddress: 'other.test' });
+  assert.equal(cleared.mapName, undefined);
+  assert.equal(cleared.mapNames, undefined);
+  const restored = await f.call('world.activate', { ...activation, serverAddress: 'other.test', mapName: '重新确认地图' });
+  assert.equal(restored.mapName, '重新确认地图');
+  const next = await f.call('world.create', { townId: f.townId, name: '第二周目' });
+  await f.call('world.activate', { ...activation, worldId: next.id });
+  const historical = await f.call('world.update', { townId: f.townId, id: f.worldId, serverAddress: 'third.test' }, bob.token);
+  assert.equal(historical.mapName, undefined);
+  assert.equal(historical.mapNames, undefined);
+});
+
+test('共享地图参数校验长度、维度格式和维度数量，失败不写入', async t => {
+  const f = await fixture(t, { maximumTownRecords: 6 });
+  const payload = { townId: f.townId, worldId: f.worldId, serverAddress: 'example.test', mapName: '共享地图', dimension: position.dimension };
+  const before = await readFile(f.store.file, 'utf8');
+  for (const key of ['serverAddress', 'mapName', 'dimension']) {
+    for (const value of [undefined, null, 123, '', ' ', 'x'.repeat(key === 'dimension' ? 129 : 201)]) await rejects(f.call('world.activate', { ...payload, [key]: value }), 'invalid_argument');
+  }
+  for (const dimension of ['overworld', 'Minecraft:overworld', 'minecraft:', '__proto__']) await rejects(f.call('world.activate', { ...payload, dimension }), 'invalid_argument');
+  await rejects(f.call('world.activate', { ...payload, worldId: 'missing' }), 'not_found');
+  assert.equal(await readFile(f.store.file, 'utf8'), before);
+  const boundary = await f.call('world.activate', { ...payload, serverAddress: 's'.repeat(200), mapName: '名'.repeat(200), dimension: `example:${'a'.repeat(120)}` });
+  assert.equal(boundary.mapName.length, 200);
+  for (let index = 0; index < 5; index++) await f.call('world.activate', { ...payload, serverAddress: boundary.serverAddress, dimension: `example:dimension_${index}` });
+  await rejects(f.call('world.activate', { ...payload, serverAddress: boundary.serverAddress, dimension: 'example:extra' }), 'conflict');
+  await f.call('world.activate', { ...payload, serverAddress: boundary.serverAddress, mapName: '已更新', dimension: 'example:dimension_0' });
+  assert.equal(Object.keys((await f.snapshot()).worlds[0].mapNames).length, 6);
+});
+
+test('旧 alpha11 数据无需迁移即可读取，缺少共享地图字段保持原样', async t => {
+  const f = await fixture(t);
+  const state = structuredClone(f.service.state);
+  delete state.towns[f.townId].currentWorldId;
+  await f.store.save(state);
+  const before = await readFile(f.store.file, 'utf8');
+  const reloaded = await new TownService({ store: f.store }).initialize();
+  assert.deepEqual(reloaded.state, state);
+  const snapshot = await reloaded.handle('town.snapshot', { townId: f.townId }, f.alice.token);
+  assert.equal(snapshot.town.currentWorldId, undefined);
+  assert.equal(snapshot.worlds[0].mapName, undefined);
+  assert.equal(await readFile(f.store.file, 'utf8'), before);
+  await reloaded.handle('world.activate', { townId: f.townId, worldId: f.worldId, serverAddress: 'example.test', mapName: '迁移后地图', dimension: position.dimension }, f.alice.token);
+  assert.equal(reloaded.state.version, 3);
+  assert.equal(reloaded.state.towns[f.townId].currentWorldId, f.worldId);
 });
 
 test('不同小镇不能引用彼此数据，移除工程负责人前必须完成移交', async t => {
@@ -321,6 +447,8 @@ test('移除成员不改写历史周目的工程，历史登记者游戏名保�
   const bob = await f.join();
   const project = await f.project();
   await f.call('project.update', { townId: f.townId, id: project.id, leaderId: bob.player.id });
+  const next = await f.call('world.create', { townId: f.townId, name: '新周目' });
+  await f.call('world.activate', { townId: f.townId, worldId: next.id, serverAddress: 'example.test', mapName: '新地图', dimension: position.dimension });
   await f.call('world.archive', { townId: f.townId, worldId: f.worldId });
   const before = JSON.stringify((await f.snapshot()).projects);
   await f.call('member.remove', { townId: f.townId, playerId: bob.player.id });
@@ -355,7 +483,7 @@ test('HTTP 封装、请求格式、认证、请求大小及真实接口交互', 
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const endpoint = `http://127.0.0.1:${server.address().port}`;
   const request = (body, headers = {}) => fetch(`${endpoint}/api`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body });
-  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.11');
+  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.12');
   assert.equal((await request('{broken')).status, 400);
   assert.equal((await request('[]')).status, 400);
   assert.equal((await request(JSON.stringify({ action: 'town.list' }))).status, 401);
@@ -617,6 +745,15 @@ test('持久化损坏的子记录、权限和关联拒绝加载且原文不变',
     town => { town.tickets[0].dimension = 'minecraft:the_nether'; },
     town => { town.projects[0].status = 'completed'; },
     town => { town.tickets[0].projectId = 'missing'; },
+    town => { town.currentWorldId = 'missing'; },
+    town => { town.worlds[0].archived = true; town.worlds[0].archivedAt = town.createdAt; },
+    town => { town.worlds[0].mapName = ' '; },
+    town => { town.worlds[0].mapName = 'x'.repeat(201); },
+    town => { town.worlds[0].mapNames = []; },
+    town => { town.worlds[0].mapNames = { overworld: '地图' }; },
+    town => { town.worlds[0].mapNames = { [`example:${'a'.repeat(121)}`]: '地图' }; },
+    town => { town.worlds[0].mapNames = { 'minecraft:overworld': 'x'.repeat(201) }; },
+    town => { town.worlds[0].mapNames = Object.fromEntries(Array.from({ length: 10001 }, (_, index) => [`example:dimension_${index}`, '地图'])); },
   ];
   for (const corrupt of corruptions) {
     const state = structuredClone(original); corrupt(state.towns[f.townId]);
@@ -638,9 +775,10 @@ test('当前格式的密码、自定义权限、多设备、周目和历史维�
   const project = await f.project({ status: 'completed' });
   const ticket = await f.call('ticket.create', { townId: f.townId, projectId: project.id, ...position, title: '历史维修' }, bob.token);
   await f.call('ticket.update', { townId: f.townId, id: ticket.id, status: 'resolved', resolution: '恢复' });
+  const world = await f.call('world.create', { townId: f.townId, name: '新周目' });
+  await f.call('world.activate', { townId: f.townId, worldId: world.id, serverAddress: 'example.test', mapName: '新地图', dimension: position.dimension });
   await f.call('world.archive', { townId: f.townId, worldId: f.worldId });
   await f.call('member.remove', { townId: f.townId, playerId: bob.player.id });
-  const world = await f.call('world.create', { townId: f.townId, name: '新周目' });
   await f.project({ worldId: world.id });
   await f.project({ worldId: world.id, dimension: 'minecraft:the_nether', status: 'active' });
   const current = await f.project({ worldId: world.id, dimension: 'minecraft:the_end', status: 'completed' });

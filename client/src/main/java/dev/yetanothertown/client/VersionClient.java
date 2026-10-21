@@ -75,7 +75,8 @@ public final class VersionClient {
             }
             if (!identity.isEmpty() && !gateway.loggedIn() && !connectingIdentity && now >= nextIdentityAttempt) connectIdentity(() -> {});
             if (client.player != null && now >= nextMapBindingAttempt) {
-                try { gateway.autoBindMap(serverAddress(), dimension(), XaeroBridge.playerMapKey(dimension())); }
+                nextMapBindingAttempt = now + gateway.config().pollIntervalSeconds * 1_000_000_000L;
+                try { XaeroBridge.synchronizeSharedMap(); }
                 catch (IllegalStateException | IllegalArgumentException exception) {
                     nextMapBindingAttempt = now + gateway.config().pollIntervalSeconds * 1_000_000_000L;
                     gateway.status = exception.getMessage();

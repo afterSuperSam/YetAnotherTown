@@ -109,7 +109,9 @@ public final class VerifyLinks {
                 new String[]{prefix + "/XaeroBridge", "registerHighlighter", "(Ljava/lang/Object;)V"},
                 new String[]{prefix + "/XaeroBridge", "renderMapTooltip", "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)V"},
                 new String[]{prefix + "/XaeroBridge", "playerMapKey", "(Ljava/lang/String;)Ljava/lang/String;"},
-                new String[]{prefix + "/XaeroBridge", "associateCurrentMap", "(Lnet/minecraft/client/gui/screens/Screen;)Z"},
+                new String[]{prefix + "/XaeroBridge", "synchronizeSharedMap", "()V"},
+                new String[]{prefix + "/XaeroBridge", "currentMapSetupBlockReason", "()Ljava/lang/String;"},
+                new String[]{prefix + "/XaeroBridge", "currentMapName", "()Ljava/lang/String;"},
                 new String[]{prefix + "/XaeroBridge", "addMapOptions", "(Ljava/lang/Object;Ljava/lang/Object;)V"}))
             if (!resolves(method[0], method[1], method[2], false, new HashSet<>())) failures.add("Native map hook target missing: " + String.join(" ", method));
 
@@ -119,18 +121,15 @@ public final class VerifyLinks {
         if (!calls(load(prefix + "/XaeroBridge"), "registerHighlighter", "xaero/map/highlight/HighlighterRegistry", "register"))
             failures.add("Project highlighter is not registered with the native registry");
         ClassModel bridge = load(prefix + "/XaeroBridge");
-        if (calls(bridge, "associateCurrentMap", prefix + "/TownGateway", "selectWorld")
-                || calls(bridge, "saveAssociation", prefix + "/TownGateway", "selectWorld")
-                || !calls(bridge, "associateCurrentMap", prefix + "/XaeroBridge", "saveAssociation")
-                || !calls(bridge, "saveAssociation", prefix + "/TownGateway", "bindCurrentMap")
-                || !calls(bridge, "saveAssociation", prefix + "/TownGateway", "unbindMap"))
-            failures.add("One-step map association must preserve the selected-world snapshot and restore failed bindings");
-        boolean confirmsPlayer = bridge != null && bridge.methods().stream().anyMatch(method -> {
-            String name = method.methodName().stringValue();
-            return name.startsWith("lambda$associateCurrentMap$")
-                    && calls(bridge, name, prefix + "/XaeroBridge", "confirmAssociation");
-        });
-        if (!confirmsPlayer || !calls(bridge, "confirmAssociation", "xaero/map/MapProcessor", "setMultiworld")
+        if (calls(bridge, "synchronizeSharedMap", prefix + "/TownGateway", "selectWorld")
+                || !calls(bridge, "synchronizeSharedMap", prefix + "/XaeroBridge", "currentMapSetupBlockReason")
+                || !calls(bridge, "synchronizeSharedMap", prefix + "/TownGateway", "matchesSharedMap")
+                || !calls(bridge, "synchronizeSharedMap", prefix + "/TownGateway", "autoBindMap")
+                || !calls(bridge, "resolvedMapKey", prefix + "/TownGateway", "matchesSharedMap")
+                || !calls(bridge, "mapName", "xaero/map/world/MapDimension", "getMultiworldName"))
+            failures.add("Shared map synchronization must validate native readiness and authoritative map names without changing the selected world");
+        if (!calls(bridge, "synchronizeSharedMap", prefix + "/XaeroBridge", "confirmAssociation")
+                || !calls(bridge, "confirmAssociation", "xaero/map/MapProcessor", "setMultiworld")
                 || !calls(bridge, "confirmAssociation", "xaero/map/MapProcessor", "confirmMultiworld")
                 || !calls(bridge, "confirmAssociation", "xaero/map/MapProcessor", "toggleMultiworldType")
                 || !calls(bridge, "confirmAssociation", "xaero/map/world/MapWorld", "getFutureMultiworldType")

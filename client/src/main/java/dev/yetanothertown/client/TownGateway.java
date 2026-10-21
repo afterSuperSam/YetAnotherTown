@@ -37,6 +37,7 @@ public final class TownGateway {
     private final AtomicLong snapshots = new AtomicLong();
     private final AtomicLong townLists = new AtomicLong();
     private volatile String token = "";
+    private volatile boolean followCurrentWorld = true;
     private volatile JsonObject player = new JsonObject();
     private volatile ClientConfig configuration = new ClientConfig();
     private Path configurationPath;
@@ -54,6 +55,48 @@ public final class TownGateway {
     public ClientConfig config() { return configuration; }
     public JsonObject player() { return player.deepCopy(); }
     public boolean loggedIn() { return !token.isEmpty(); }
+
+    public synchronized String currentWorldId() {
+        return snapshot.has("town") && snapshot.get("town").isJsonObject() ? stringValue(snapshot.getAsJsonObject("town"), "currentWorldId") : "";
+    }
+
+    /** 当前周目按镇长公布的服务器、维度与地图名称匹配，不依赖本地缓存。 */
+    public synchronized boolean matchesSharedMap(String serverAddress, String dimension, String mapName) {
+        if (!loggedIn() || worldId.isEmpty() || !worldId.equals(currentWorldId()) || serverAddress == null || serverAddress.isBlank()
+                || dimension == null || dimension.length() > 128 || !dimension.matches("[a-z0-9_.-]+:[a-z0-9_/.-]+")
+                || mapName == null || mapName.isBlank() || !snapshot.has("worlds") || !snapshot.get("worlds").isJsonArray()) return false;
+        for (JsonElement element : snapshot.getAsJsonArray("worlds")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject world = element.getAsJsonObject();
+            if (!worldId.equals(stringValue(world, "id")) || !world.has("archived") || !world.get("archived").isJsonPrimitive()
+                    || !world.getAsJsonPrimitive("archived").isBoolean() || world.get("archived").getAsBoolean()) continue;
+            String address = stringValue(world, "serverAddress").strip();
+            if (address.isEmpty() || !address.equalsIgnoreCase(serverAddress.strip())) return false;
+            String expected = world.has("mapNames") && world.get("mapNames").isJsonObject() ? stringValue(world.getAsJsonObject("mapNames"), dimension) : "";
+            if (expected.isBlank()) expected = stringValue(world, "mapName");
+            return !expected.isBlank() && expected.equals(mapName);
+        }
+        return false;
+    }
+
+    private static String stringValue(JsonObject object, String key) {
+        JsonElement value = object.get(key);
+        return value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isString() ? value.getAsString() : "";
+    }
+
+    private static JsonObject sharedMapIdentity(JsonObject source, String selectedWorld) {
+        JsonObject identity = new JsonObject();
+        if (source.has("town") && source.get("town").isJsonObject()) identity.add("currentWorldId", source.getAsJsonObject("town").get("currentWorldId"));
+        if (source.has("worlds") && source.get("worlds").isJsonArray()) {
+            for (JsonElement element : source.getAsJsonArray("worlds")) {
+                if (!element.isJsonObject() || !selectedWorld.equals(stringValue(element.getAsJsonObject(), "id"))) continue;
+                JsonObject world = element.getAsJsonObject();
+                for (String field : new String[]{"serverAddress", "mapName", "mapNames"}) identity.add(field, world.get(field));
+                break;
+            }
+        }
+        return identity;
+    }
 
     public record Context(long authentication, long selection, String endpoint) { }
 
@@ -174,23 +217,21 @@ public final class TownGateway {
         updateBinding(dimension, null);
     }
 
-    /** 唯一匹配的当前周目首次关联玩家底图，已有或历史绑定始终保留。 */
-    public synchronized boolean autoBindMap(String serverAddress, String dimension, String mapKey) {
-        if (!loggedIn() || worldId.isEmpty() || mapKey.isEmpty() || !getBoundMapKey(dimension).isEmpty() || !snapshot.has("worlds")) return false;
-        String candidate = "";
-        for (JsonElement element : snapshot.getAsJsonArray("worlds")) {
-            JsonObject world = element.getAsJsonObject();
-            String address = world.has("serverAddress") ? world.get("serverAddress").getAsString() : "";
-            if (world.get("archived").getAsBoolean() || address.isBlank() || !address.equalsIgnoreCase(serverAddress)) continue;
-            if (!candidate.isEmpty()) return false;
-            candidate = world.get("id").getAsString();
-        }
-        if (!worldId.equals(candidate)) return false;
+    /** 共享地图匹配成功后缓存玩家底图，缓存失败不影响当前地图显示。 */
+    public synchronized boolean autoBindMap(String serverAddress, String dimension, String mapKey, String mapName) {
+        if (!matchesSharedMap(serverAddress, dimension, mapName) || mapKey == null || mapKey.isBlank() || getBoundMapKey(dimension).equals(mapKey)) return false;
+        String target = bindingKey(dimension);
         String scope = configuration.endpoint + "#" + townId + "/";
         for (var binding : configuration.mapBindings.entrySet())
-            if (binding.getKey().startsWith(scope) && binding.getKey().endsWith("/" + dimension) && binding.getValue().equals(mapKey)) return false;
-        bindCurrentMap(dimension, mapKey);
-        return true;
+            if (binding.getKey().startsWith(scope) && !binding.getKey().equals(target) && binding.getKey().endsWith("/" + dimension) && binding.getValue().equals(mapKey)) return false;
+        try { bindCurrentMap(dimension, mapKey); status = "已自动匹配小镇当前地图"; return true; }
+        catch (IllegalArgumentException exception) {
+            LOGGER.log(System.Logger.Level.WARNING, "Shared map cache rejected: invalid local binding", exception);
+            return false;
+        } catch (IllegalStateException exception) {
+            LOGGER.log(System.Logger.Level.WARNING, "Shared map cache unavailable: local configuration could not be saved", exception);
+            return false;
+        }
     }
 
     private String bindingKey(String dimension) {
@@ -263,6 +304,7 @@ public final class TownGateway {
         towns = new JsonArray();
         townId = "";
         worldId = "";
+        followCurrentWorld = true;
         snapshot = new JsonObject();
         selection.incrementAndGet();
         status = message;
@@ -375,17 +417,25 @@ public final class TownGateway {
         return request("town.snapshot", object("townId", selectedTown, "worldId", selectedWorld)).thenCompose(result -> {
             synchronized (this) {
                 if (snapshots.get() != requestRevision || selection.get() != revision || !townId.equals(selectedTown) || !worldId.equals(selectedWorld)) return CompletableFuture.completedFuture(result);
-                if (selectedWorld.isEmpty() && result.has("worlds")) {
-                    for (JsonElement element : result.getAsJsonArray("worlds")) {
-                        JsonObject world = element.getAsJsonObject();
-                        if (!world.get("archived").getAsBoolean()) { worldId = world.get("id").getAsString(); break; }
-                    }
-                    if (worldId.isEmpty() && !result.getAsJsonArray("worlds").isEmpty()) worldId = result.getAsJsonArray("worlds").get(0).getAsJsonObject().get("id").getAsString();
-                    if (!worldId.isEmpty()) {
-                        selection.incrementAndGet();
-                        return refresh();
+                String nextWorld = selectedWorld;
+                if (followCurrentWorld || selectedWorld.isEmpty()) {
+                    String currentWorld = result.has("town") && result.get("town").isJsonObject() ? stringValue(result.getAsJsonObject("town"), "currentWorldId") : "";
+                    if (!currentWorld.isEmpty()) nextWorld = currentWorld;
+                    else if (result.has("worlds") && result.get("worlds").isJsonArray()) {
+                        for (JsonElement element : result.getAsJsonArray("worlds")) {
+                            JsonObject world = element.getAsJsonObject();
+                            if (!world.get("archived").getAsBoolean()) { nextWorld = world.get("id").getAsString(); break; }
+                        }
+                        if (nextWorld.isEmpty() && !result.getAsJsonArray("worlds").isEmpty()) nextWorld = result.getAsJsonArray("worlds").get(0).getAsJsonObject().get("id").getAsString();
                     }
                 }
+                if (!nextWorld.equals(selectedWorld)) {
+                    worldId = nextWorld;
+                    snapshot = new JsonObject();
+                    selection.incrementAndGet();
+                    return refresh();
+                }
+                if (!snapshot.isEmpty() && !sharedMapIdentity(snapshot, selectedWorld).equals(sharedMapIdentity(result, selectedWorld))) selection.incrementAndGet();
                 snapshot = result;
                 return CompletableFuture.completedFuture(result);
             }
@@ -396,16 +446,26 @@ public final class TownGateway {
         selection.incrementAndGet();
         townId = id;
         worldId = "";
+        followCurrentWorld = true;
         snapshot = new JsonObject();
         refresh();
     }
 
     public synchronized void selectWorld(String id) {
+        followCurrentWorld = !id.isEmpty() && id.equals(currentWorldId());
         if (worldId.equals(id)) return;
         selection.incrementAndGet();
         worldId = id;
         snapshot = new JsonObject();
         refresh();
+    }
+
+    public synchronized CompletableFuture<JsonObject> followCurrentWorld() {
+        followCurrentWorld = true;
+        selection.incrementAndGet();
+        worldId = "";
+        snapshot = new JsonObject();
+        return refresh();
     }
 
     public static JsonObject object(Object... pairs) {

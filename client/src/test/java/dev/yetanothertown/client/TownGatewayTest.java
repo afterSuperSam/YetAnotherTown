@@ -69,6 +69,12 @@ public final class TownGatewayTest {
         CountDownLatch townListRelease = new CountDownLatch(1);
         var delayTownList = new java.util.concurrent.atomic.AtomicBoolean();
         CountDownLatch oversizedRelease = new CountDownLatch(1);
+        AtomicReference<String> sharedCurrent = new AtomicReference<>("e".repeat(24));
+        AtomicReference<JsonObject> sharedMetadata = new AtomicReference<>(TownGateway.object("serverAddress", "town.example", "mapName", "world", "mapNames", TownGateway.object("minecraft:the_nether", "nether"), "name", "原周目名称"));
+        var sharedSnapshots = new java.util.concurrent.atomic.AtomicInteger();
+        var delaySharedSnapshot = new java.util.concurrent.atomic.AtomicBoolean();
+        CountDownLatch sharedStarted = new CountDownLatch(1);
+        CountDownLatch sharedRelease = new CountDownLatch(1);
         AtomicReference<JsonObject> claimedIdentity = new AtomicReference<>();
         var executor = Executors.newVirtualThreadPerTaskExecutor();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -107,6 +113,12 @@ public final class TownGatewayTest {
                 }
                 case "town.snapshot" -> {
                     String town = payload.get("townId").getAsString();
+                    String sharedWorld = sharedCurrent.get();
+                    if (town.equals("shared") && delaySharedSnapshot.getAndSet(false)) {
+                        sharedStarted.countDown();
+                        try { sharedRelease.await(5, TimeUnit.SECONDS); }
+                        catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
+                    }
                     if (town.equals("slow")) {
                         slowStarted.countDown();
                         try { slowRelease.await(5, TimeUnit.SECONDS); }
@@ -119,7 +131,17 @@ public final class TownGatewayTest {
                         town = "outdated";
                     }
                     String worlds = town.equals("automatic") ? "[{\"id\":\"" + "c".repeat(24) + "\",\"archived\":false}]" : "[]";
-                    body = "{\"ok\":true,\"data\":{\"town\":{\"id\":\"" + town + "\"},\"worlds\":" + worlds + "}}";
+                    if (town.equals("shared")) {
+                        sharedSnapshots.incrementAndGet();
+                        worlds = "[{\"id\":\"" + "e".repeat(24) + "\",\"archived\":false},{\"id\":\"" + "f".repeat(24) + "\",\"archived\":false},{\"id\":\"" + "b".repeat(24) + "\",\"archived\":true}]";
+                        var sharedWorlds = JsonParser.parseString(worlds).getAsJsonArray();
+                        for (var world : sharedWorlds) {
+                            for (var metadata : sharedMetadata.get().entrySet()) world.getAsJsonObject().add(metadata.getKey(), metadata.getValue());
+                        }
+                        worlds = sharedWorlds.toString();
+                    }
+                    String pointer = town.equals("shared") ? ",\"currentWorldId\":\"" + sharedWorld + "\"" : "";
+                    body = "{\"ok\":true,\"data\":{\"town\":{\"id\":\"" + town + "\"" + pointer + "},\"worlds\":" + worlds + ",\"projects\":[{\"worldId\":\"" + payload.get("worldId").getAsString() + "\"}]}}";
                 }
                 case "denied" -> { status = 403; body = "{\"ok\":false,\"error\":{\"code\":\"FORBIDDEN\",\"message\":\"没有操作权限\"}}"; }
                 case "expired" -> { status = 401; body = "{\"ok\":false,\"error\":{\"code\":\"unauthenticated\",\"message\":\"登录已过期\"}}"; }
@@ -213,24 +235,47 @@ public final class TownGatewayTest {
             gateway.townId = "00000001";
             gateway.worldId = "c".repeat(24);
             var worlds = new com.google.gson.JsonArray();
-            var currentWorld = TownGateway.object("id", gateway.worldId, "archived", false, "serverAddress", "town.example");
+            var currentWorld = TownGateway.object("id", gateway.worldId, "archived", false, "serverAddress", "town.example", "mapName", "world");
             worlds.add(currentWorld);
-            gateway.snapshot = TownGateway.object("worlds", worlds);
+            var currentTown = TownGateway.object("currentWorldId", gateway.worldId);
+            gateway.snapshot = TownGateway.object("town", currentTown, "worlds", worlds);
+            require(gateway.currentWorldId().equals(gateway.worldId), "current season pointer is exposed from the shared snapshot");
             currentWorld.addProperty("serverAddress", "");
-            require(!gateway.autoBindMap("town.example", "minecraft:overworld", "personal-server|third"), "worlds without a server address require explicit map binding");
-            currentWorld.addProperty("serverAddress", "town.example");
-            require(!gateway.autoBindMap("different.example", "minecraft:overworld", "personal-server|third"), "automatic binding must match the current server");
-            require(!gateway.autoBindMap("town.example", "minecraft:overworld", "personal-server|first"), "automatic binding cannot reuse historical terrain");
-            require(gateway.autoBindMap("TOWN.EXAMPLE", "minecraft:overworld", "personal-server|third"), "a unique active world binds automatically without a management detour");
-            require(!gateway.autoBindMap("town.example", "minecraft:overworld", "personal-server|replacement") && gateway.getBoundMapKey("minecraft:overworld").equals("personal-server|third"), "automatic binding never overwrites an existing map");
+            require(!gateway.matchesSharedMap("town.example", "minecraft:overworld", "world"), "worlds without a server address cannot match a shared map");
+            currentWorld.addProperty("serverAddress", " town.example ");
+            require(gateway.matchesSharedMap(" TOWN.EXAMPLE ", "minecraft:overworld", "world"), "shared server identity strips whitespace and ignores address case");
+            require(!gateway.matchesSharedMap("different.example", "minecraft:overworld", "world"), "shared maps must match the current server");
+            require(!gateway.matchesSharedMap("town.example", "minecraft:overworld", "World"), "Xaero map names match exactly including case");
+            require(!gateway.matchesSharedMap("town.example", "minecraft:overworld", ""), "blank Xaero map names cannot match");
+            require(!gateway.matchesSharedMap("town.example", "overworld", "world"), "shared matching rejects invalid dimensions");
+            require(!gateway.matchesSharedMap("town.example", "example:" + "a".repeat(121), "world"), "shared matching rejects overlong dimensions");
+            require(!gateway.autoBindMap("town.example", "minecraft:overworld", "personal-server|first", "world"), "archive cache cannot reuse historical terrain");
+            require(gateway.matchesSharedMap("town.example", "minecraft:overworld", "world"), "historical cache collision does not block normal shared map matching");
+            require(gateway.autoBindMap("TOWN.EXAMPLE", "minecraft:overworld", "personal-server|third", "world"), "a shared current map caches the local instance for later archive viewing");
+            require(!gateway.autoBindMap("town.example", "minecraft:overworld", "personal-server|third", "world"), "unchanged local archive cache is a no-op");
+            require(gateway.autoBindMap("town.example", "minecraft:overworld", "personal-server|replacement", "world") && gateway.getBoundMapKey("minecraft:overworld").equals("personal-server|replacement"), "a legitimate new local instance refreshes the current season archive cache");
+            require(!gateway.autoBindMap("town.example", "minecraft:overworld", " ", "world"), "blank local cache keys are ignored");
+            require(!gateway.autoBindMap("town.example", "minecraft:overworld", "invalid", "world") && gateway.matchesSharedMap("town.example", "minecraft:overworld", "world"), "invalid archive cache data does not block shared map matching");
+            currentWorld.add("mapNames", TownGateway.object("minecraft:the_nether", "nether"));
+            require(gateway.matchesSharedMap("town.example", "minecraft:the_nether", "nether"), "dimension-specific names override the shared default");
+            require(!gateway.matchesSharedMap("town.example", "minecraft:the_nether", "world"), "dimension overrides do not also match the default name");
+            require(gateway.matchesSharedMap("town.example", "minecraft:the_end", "world"), "unlisted dimensions fall back to the shared default name");
+            currentWorld.addProperty("mapName", "");
+            require(!gateway.matchesSharedMap("town.example", "minecraft:the_end", "world") && gateway.matchesSharedMap("town.example", "minecraft:the_nether", "nether"), "a missing default name disables only dimensions without an override");
+            currentWorld.addProperty("mapName", "world");
             worlds.add(TownGateway.object("id", "d".repeat(24), "archived", false, "serverAddress", "town.example"));
-            require(!gateway.autoBindMap("town.example", "minecraft:the_nether", "personal-server|third"), "ambiguous active worlds require explicit binding");
+            require(gateway.matchesSharedMap("town.example", "minecraft:overworld", "world"), "multiple seasons on the same server are unambiguous with the current pointer");
             worlds.remove(1);
             currentWorld.addProperty("archived", true);
-            require(!gateway.autoBindMap("town.example", "minecraft:the_nether", "personal-server|third"), "archived worlds cannot bind automatically");
+            require(!gateway.matchesSharedMap("town.example", "minecraft:overworld", "world"), "archived worlds cannot match shared current maps");
             currentWorld.addProperty("archived", false);
             gateway.worldId = "d".repeat(24);
-            require(!gateway.autoBindMap("town.example", "minecraft:the_nether", "personal-server|third"), "the automatically matched world must be the selected world");
+            require(!gateway.matchesSharedMap("town.example", "minecraft:overworld", "world"), "shared current pointer must equal the selected world");
+            currentTown.addProperty("currentWorldId", gateway.worldId);
+            require(!gateway.matchesSharedMap("town.example", "minecraft:overworld", "world"), "a current pointer without a known world cannot match");
+            gateway.worldId = "c".repeat(24);
+            currentTown.remove("currentWorldId");
+            require(!gateway.matchesSharedMap("town.example", "minecraft:overworld", "world"), "legacy snapshots without a current pointer cannot automatically match maps");
             gateway.townId = savedTown; gateway.worldId = savedWorld; gateway.snapshot = savedSnapshot;
             gateway.request("denied", TownGateway.object()).handle((value, error) -> null).join();
             require(gateway.status.equals("没有操作权限"), "service errors remain Chinese");
@@ -260,6 +305,66 @@ public final class TownGatewayTest {
             TownGateway.Context beforeAutomaticWorld = gateway.context();
             gateway.refresh().get(5, TimeUnit.SECONDS);
             require(!gateway.isCurrent(beforeAutomaticWorld) && gateway.worldId.equals("c".repeat(24)), "automatic world selection invalidates the previous operation context");
+            require(gateway.currentWorldId().isEmpty() && !gateway.matchesSharedMap("town.example", "minecraft:overworld", "world"), "legacy world selection remains available for viewing without shared identity matching");
+            gateway.selectTown("shared");
+            gateway.refresh().get(5, TimeUnit.SECONDS);
+            require(gateway.worldId.equals("e".repeat(24)), "town selection follows the mayor's current season pointer");
+            gateway.snapshot = new JsonObject();
+            var beforeInitialSharedSnapshot = gateway.context();
+            gateway.refresh().get(5, TimeUnit.SECONDS);
+            require(gateway.isCurrent(beforeInitialSharedSnapshot), "the initial snapshot for an already-selected world preserves its operation context");
+            for (String field : new String[]{"serverAddress", "mapName", "mapNames"}) {
+                var beforeIdentityChange = gateway.context();
+                int requestsBeforeIdentityChange = sharedSnapshots.get();
+                JsonObject revisedMetadata = sharedMetadata.get().deepCopy();
+                if (field.equals("mapNames")) revisedMetadata.add(field, TownGateway.object("minecraft:the_nether", "new-nether"));
+                else revisedMetadata.addProperty(field, "changed-" + field);
+                sharedMetadata.set(revisedMetadata);
+                gateway.refresh().get(5, TimeUnit.SECONDS);
+                require(!gateway.isCurrent(beforeIdentityChange), "same-season shared map changes invalidate pending forms: " + field);
+                require(sharedSnapshots.get() == requestsBeforeIdentityChange + 1 && gateway.worldId.equals("e".repeat(24)), "same-season shared identity changes require no second snapshot request: " + field);
+            }
+            var beforeMetadataChange = gateway.context();
+            JsonObject renamedMetadata = sharedMetadata.get().deepCopy();
+            renamedMetadata.addProperty("name", "新的周目名称");
+            renamedMetadata.addProperty("description", "更新简介");
+            renamedMetadata.addProperty("worldKey", "legacy-metadata");
+            sharedMetadata.set(renamedMetadata);
+            gateway.refresh().get(5, TimeUnit.SECONDS);
+            require(gateway.isCurrent(beforeMetadataChange), "ordinary names, descriptions and legacy metadata do not invalidate pending forms");
+            var beforeMayorSwitch = gateway.context();
+            sharedCurrent.set("f".repeat(24));
+            gateway.refresh().get(5, TimeUnit.SECONDS);
+            require(gateway.worldId.equals(sharedCurrent.get()) && !gateway.isCurrent(beforeMayorSwitch), "polling follows a changed current season and invalidates old operation context");
+            require(gateway.snapshot.getAsJsonArray("projects").get(0).getAsJsonObject().get("worldId").getAsString().equals(gateway.worldId), "a mayor's season switch refetches data for the newly selected world");
+            gateway.selectWorld("b".repeat(24));
+            gateway.refresh().get(5, TimeUnit.SECONDS);
+            sharedCurrent.set("e".repeat(24));
+            gateway.refresh().get(5, TimeUnit.SECONDS);
+            require(gateway.worldId.equals("b".repeat(24)) && gateway.currentWorldId().equals(sharedCurrent.get()), "explicit historical browsing is preserved when the shared current season changes");
+            var beforeFollow = gateway.context();
+            gateway.followCurrentWorld().get(5, TimeUnit.SECONDS);
+            require(gateway.worldId.equals(sharedCurrent.get()) && !gateway.isCurrent(beforeFollow), "returning to the current season discards historical context and follows the current pointer");
+            gateway.selectWorld("b".repeat(24));
+            gateway.refresh().get(5, TimeUnit.SECONDS);
+            gateway.selectWorld(sharedCurrent.get());
+            gateway.refresh().get(5, TimeUnit.SECONDS);
+            var currentSelectionContext = gateway.context();
+            var currentSelectionSnapshot = gateway.snapshot;
+            gateway.selectWorld(gateway.worldId);
+            require(gateway.isCurrent(currentSelectionContext) && gateway.snapshot == currentSelectionSnapshot, "selecting the already-current season preserves loaded context");
+            sharedCurrent.set("f".repeat(24));
+            gateway.refresh().get(5, TimeUnit.SECONDS);
+            require(gateway.worldId.equals(sharedCurrent.get()), "explicitly choosing the shared current season resumes following future mayor changes");
+            sharedCurrent.set("e".repeat(24));
+            delaySharedSnapshot.set(true);
+            var staleSharedRefresh = gateway.refresh();
+            require(sharedStarted.await(5, TimeUnit.SECONDS), "an older current-season snapshot is in flight");
+            sharedCurrent.set("f".repeat(24));
+            gateway.followCurrentWorld().get(5, TimeUnit.SECONDS);
+            sharedRelease.countDown();
+            staleSharedRefresh.get(5, TimeUnit.SECONDS);
+            require(gateway.worldId.equals(sharedCurrent.get()) && gateway.currentWorldId().equals(sharedCurrent.get()), "an old response cannot overwrite the latest followed season");
             gateway.townId = "same";
             CompletableFuture<JsonObject> oldRefresh = gateway.refresh();
             require(refreshStarted.await(5, TimeUnit.SECONDS), "same selection refresh is in flight");
@@ -267,12 +372,18 @@ public final class TownGatewayTest {
             refreshRelease.countDown();
             oldRefresh.get(5, TimeUnit.SECONDS);
             require(gateway.snapshot.getAsJsonObject("town").get("id").getAsString().equals("same"), "older refresh cannot overwrite a newer snapshot of the same selection");
+            gateway.selectWorld("b".repeat(24));
+            gateway.refresh().get(5, TimeUnit.SECONDS);
             TownGateway.Context previousSession = gateway.context();
             gateway.request("expired", TownGateway.object()).handle((value, error) -> null).join();
             require(!gateway.isCurrent(previousSession), "session expiry invalidates pending screen operations");
             require(!gateway.loggedIn() && gateway.towns.isEmpty() && gateway.snapshot.isEmpty() && gateway.player().isEmpty(), "expired session clears private cached data");
             require(gateway.status.equals("登录已过期"), "expired session preserves visible error");
             gateway.login(playerId, "Sam").get(5, TimeUnit.SECONDS);
+            gateway.townId = "shared";
+            gateway.worldId = "b".repeat(24);
+            gateway.refresh().get(5, TimeUnit.SECONDS);
+            require(gateway.worldId.equals(sharedCurrent.get()), "a fresh session follows the current season by default");
             CompletableFuture<JsonObject> login = gateway.login(playerId, "Delayed");
             require(loginStarted.await(5, TimeUnit.SECONDS), "identity connection is in flight");
             gateway.logout();
@@ -287,6 +398,7 @@ public final class TownGatewayTest {
             refreshRelease.countDown();
             loginRelease.countDown();
             townListRelease.countDown();
+            sharedRelease.countDown();
             server.stop(0);
             oversizedRelease.countDown();
             executor.close();

@@ -95,29 +95,29 @@ public final class TownScreen extends Screen {
         controller.returnScreen = parent; controller.externalParent = true;
         for (JsonElement element : controller.array("worlds")) {
             JsonObject world = element.getAsJsonObject();
-            if (stringValue(world, "id").equals(controller.gateway.worldId)) {
-                if (bool(world, "archived")) controller.bindWorldMap(world);
-                else if (!XaeroBridge.associateCurrentMap(parent)) VersionClient.show(new TownForm(parent, "关联当前地图", List.of(),
-                        List.of(controller.gateway.status), List.of(controller.action("重试关联", () -> openMapBinding(parent))), null));
+            if (stringValue(world, "id").equals(controller.gateway.worldId) && bool(world, "archived")) {
+                controller.bindWorldMap(world);
                 return;
             }
         }
         List<TownForm.Action> actions = new ArrayList<>();
-        for (JsonElement element : controller.array("worlds")) {
-            JsonObject world = element.getAsJsonObject();
-            if (bool(world, "archived")) continue;
-            actions.add(controller.action(stringValue(world, "name"), () -> {
-                controller.gateway.selectWorld(stringValue(world, "id"));
-                TownGateway.Context context = controller.gateway.context();
-                controller.gateway.refresh().whenComplete((result, failure) -> Minecraft.getInstance().execute(() -> {
-                    if (!controller.gateway.isCurrent(context)) return;
-                    if (failure == null) openMapBinding(parent);
-                    else VersionClient.show(new TownForm(parent, "加载周目失败", List.of(), List.of(controller.gateway.status), List.of(), null));
-                }));
-            }));
+        JsonObject current = controller.currentWorld();
+        if (!current.isEmpty()) actions.add(controller.action("返回小镇当前世界", () -> {
+            controller.gateway.followCurrentWorld();
+            VersionClient.show(parent);
+        }));
+        if (controller.isMayor()) {
+            if (!current.isEmpty()) actions.add(controller.action("使用我所在的地图", () -> controller.activateWorld(current)));
+            else actions.add(controller.action("选择并设置当前世界", controller::chooseWorld));
+            if (controller.has("worlds.manage")) actions.add(controller.action("登记新世界 / 周目", controller::worldForm));
         }
-        if (controller.has("worlds.manage")) actions.add(controller.action("登记新世界 / 周目", controller::worldForm));
-        VersionClient.show(new TownForm(parent, "这张地图属于哪个周目", List.of(), List.of(actions.isEmpty() ? "请先联系小镇管理员登记世界与周目。" : "选择一次即可关联当前地图。"), actions, null));
+        String expectedName = stringValue(objectValue(current, "mapNames"), XaeroBridge.currentMapDimension(), stringValue(current, "mapName"));
+        String explanation = current.isEmpty() || expectedName.isBlank()
+                ? "请由镇长进入游戏，点击使用所在地图。设置一次，成员自动匹配，各维度均可创建工程。"
+                : "小镇当前世界：" + stringValue(current, "name") + "\n服务器：" + stringValue(current, "serverAddress")
+                    + "\n小镇地图：" + expectedName + "\n本机地图：" + XaeroBridge.currentMapName()
+                    + "\n服务器、维度和地图名称匹配后自动显示工程。如名称不同，请在 Xaero 恢复名称或联系镇长更新。";
+        VersionClient.show(new TownForm(parent, "小镇当前地图", List.of(), List.of(explanation), actions, null));
     }
     private Screen destination() { return externalParent ? returnScreen : this; }
 
@@ -287,9 +287,9 @@ public final class TownScreen extends Screen {
         int worldTextWidth = compactWorld ? homeActionWidth : mainWidth - 20;
         panels.add(new Panel(x, worldY, mainWidth, worldHeight, false));
         label("世界与周目", x + 10, worldY + 12, ACCENT);
-        label(font.plainSubstrByWidth(worldName(gateway.worldId), worldTextWidth), x + 10, worldY + 29, TEXT);
+        label(font.plainSubstrByWidth((isCurrentWorld(gateway.worldId) ? "当前 · " : "浏览 · ") + worldName(gateway.worldId), worldTextWidth), x + 10, worldY + 29, TEXT);
         label(font.plainSubstrByWidth(roleName(stringValue(objectValue(gateway.snapshot, "currentMember"), "roleId", "尚未加入")), worldTextWidth), x + 10, worldY + 44, MUTED);
-        Button world = button("周目与地图", x + 18 + homeActionWidth, worldY + (compactWorld ? 22 : 65), homeActionWidth, this::chooseWorld);
+        Button world = button("当前世界 / 历史", x + 18 + homeActionWidth, worldY + (compactWorld ? 22 : 65), homeActionWidth, this::chooseWorld);
         world.active = !gateway.townId.isEmpty();
         int linksY = wide ? y + profileHeight + 8 : worldY + worldHeight + 8;
         Button create = button("注册小镇", settingsX, linksY, settingsWidth, () -> leaveTownSettings(this::createTown));
@@ -451,6 +451,7 @@ public final class TownScreen extends Screen {
             String title = tab == 1 ? XaeroBridge.projectName(record) : stringValue(record, "name", stringValue(record, "title", "记录"));
             String subtitle = subtitle(record);
             String status = state(stringValue(record, "status", bool(record, "archived") ? "archived" : ""));
+            if (record.has("worldKey") && isCurrentWorld(stringValue(record, "id"))) status = "小镇当前世界";
             boolean repair = tab == 1 && List.of("completed", "maintenance").contains(stringValue(record, "status"));
             cards.add(new Card(contentLeft, y, contentWidth, rowStep - 4, title, subtitle, status, repair, record));
             int buttonY = y + (rowStep - 4 - 20) / 2;
@@ -580,8 +581,14 @@ public final class TownScreen extends Screen {
     }
     private void chooseWorld() {
         List<TownForm.Action> actions = new ArrayList<>();
-        for (JsonElement element : array("worlds")) { JsonObject world = element.getAsJsonObject(); actions.add(action(stringValue(world, "name") + (bool(world, "archived") ? " · 历史" : " · 进行中"), () -> { gateway.selectWorld(stringValue(world, "id")); VersionClient.show(this); })); }
-        VersionClient.show(new TownForm(this, "选择世界与周目", List.of(), List.of("归档周目保存项目与业务标记，并按 Xaero 世界标识关联个人本地历史地图。"), actions, null));
+        JsonObject current = currentWorld();
+        if (!current.isEmpty()) actions.add(action("返回当前世界 · " + stringValue(current, "name"), () -> { gateway.followCurrentWorld(); VersionClient.show(destination()); }));
+        for (JsonElement element : array("worlds")) {
+            JsonObject world = element.getAsJsonObject();
+            actions.add(action(stringValue(world, "name") + (isCurrentWorld(stringValue(world, "id")) ? " · 当前" : bool(world, "archived") ? " · 历史" : " · 未启用"), () -> worldDetail(world)));
+        }
+        if (actions.isEmpty() && has("worlds.manage")) actions.add(action("登记新世界 / 周目", this::worldForm));
+        VersionClient.show(new TownForm(destination(), "当前世界与历史", List.of(), List.of("镇长统一指定当前世界，成员自动跟随。历史资料可单独浏览。"), actions, null));
     }
     private void memberDetail(JsonObject member) {
         String id = stringValue(member, "playerId");
@@ -635,22 +642,47 @@ public final class TownScreen extends Screen {
     }
     private void worldDetail(JsonObject world) {
         List<TownForm.Action> actions = new ArrayList<>();
-        actions.add(action("切换并查看" + (bool(world, "archived") ? "历史" : "当前") + "地图资料", () -> { gateway.selectWorld(stringValue(world, "id")); VersionClient.show(destination()); }));
+        boolean current = isCurrentWorld(stringValue(world, "id"));
+        actions.add(action(current ? "返回小镇当前世界" : "浏览此周目资料", () -> {
+            if (current) gateway.followCurrentWorld(); else gateway.selectWorld(stringValue(world, "id"));
+            VersionClient.show(destination());
+        }));
+        if (isMayor() && !bool(world, "archived")) actions.add(action("将所在地图设为小镇当前世界", () -> activateWorld(world)));
         if (has("worlds.manage") && !bool(world, "archived")) actions.add(action("编辑世界名称、服务器与地图标识", () -> worldForm(world)));
-        if (!XaeroBridge.currentMapKey().isBlank() && stringValue(world, "id").equals(gateway.worldId))
-            actions.add(action(bool(world, "archived") ? "关联历史底图" : "关联此地图并继续", () -> openMapBinding(destination())));
+        if (bool(world, "archived") && !XaeroBridge.currentMapKey().isBlank() && stringValue(world, "id").equals(gateway.worldId))
+            actions.add(action("关联历史底图", () -> bindWorldMap(world)));
         String viewedDimension = XaeroBridge.currentMapDimension();
-        if (stringValue(world, "id").equals(gateway.worldId) && !gateway.getBoundMapKey(viewedDimension).isEmpty())
-            actions.add(action("解除当前地图关联", () -> confirm("解除地图关联", "仅解除本机当前维度的关联，项目与 Xaero 地形保留。",
+        if (bool(world, "archived") && stringValue(world, "id").equals(gateway.worldId) && !gateway.getBoundMapKey(viewedDimension).isEmpty())
+            actions.add(action("清除本机旧地图关联", () -> confirm("清除本机旧地图关联", "仅清除本机当前维度保存的关联，项目与 Xaero 地形保留。",
                     () -> { gateway.unbindMap(viewedDimension); VersionClient.show(destination()); })));
-        if (has("worlds.manage") && !bool(world, "archived")) actions.add(action("归档此世界 / 周目", () -> confirm("归档周目", "归档后业务资料只读，个人 Xaero 地图保留。", () -> perform("world.archive", object("worldId", stringValue(world, "id"))))));
-        List<String> details = new ArrayList<>(List.of("服务器：" + stringValue(world, "serverAddress"), "世界标识：" + stringValue(world, "worldKey"), "状态：" + (bool(world, "archived") ? "已归档" : "进行中"), "个人地图绑定仅保存在本机，每位成员分别关联自己探索的 Xaero 地形。"));
-        if (stringValue(world, "id").equals(gateway.worldId)) {
-            String dimension = XaeroBridge.currentMapDimension();
-            String bound = gateway.getBoundMapKey(dimension);
-            details.add("我的 " + dimension + " 地图：" + (bound.isBlank() ? "尚未绑定" : bound));
-        } else details.add("选择此周目后，可查看本机的地图绑定。");
+        if (has("worlds.manage") && !bool(world, "archived") && !current) actions.add(action("归档此世界 / 周目", () -> confirm("归档周目", "归档后业务资料只读，个人 Xaero 地图保留。", () -> perform("world.archive", object("worldId", stringValue(world, "id"))))));
+        List<String> details = new ArrayList<>(List.of("服务器：" + stringValue(world, "serverAddress"), "世界标识：" + stringValue(world, "worldKey"), "状态：" + (current ? "小镇当前世界" : bool(world, "archived") ? "历史归档 · 只读" : "尚未设为当前世界")));
+        if (bool(world, "archived")) {
+            if (stringValue(world, "id").equals(gateway.worldId)) {
+                String bound = gateway.getBoundMapKey(viewedDimension);
+                details.add("历史底图：" + (bound.isBlank() ? "尚未关联，请在 Xaero 选择历史地图后关联" : bound));
+            } else details.add("先浏览此周目，再关联本机保存的历史底图。");
+        } else {
+            String mapName = stringValue(objectValue(world, "mapNames"), viewedDimension, stringValue(world, "mapName"));
+            details.add("小镇地图名称：" + (mapName.isBlank() ? "等待镇长设置" : mapName));
+            details.add("各维度自动使用同名地图，成员保留自己探索的地形。");
+            if (current && !mapName.isBlank() && !mapName.equals(XaeroBridge.currentMapName()))
+                details.add("地图名称与小镇当前世界不一致，请在 Xaero 恢复地图名称或联系镇长更新。");
+        }
         VersionClient.show(new TownForm(destination(), stringValue(world, "name"), List.of(), details, actions, null));
+    }
+    private void activateWorld(JsonObject world) {
+        if (!isMayor() || bool(world, "archived")) { gateway.status = "只有镇长可以设置未归档的当前世界"; return; }
+        String reason = XaeroBridge.currentMapSetupBlockReason();
+        String mapName = XaeroBridge.currentMapName();
+        if (reason.isEmpty() && mapName.isBlank()) reason = "当前 Xaero 地图尚未命名，请先设置地图名称";
+        if (!reason.isEmpty()) {
+            gateway.status = reason;
+            VersionClient.show(new TownForm(destination(), "暂时无法设置当前世界", List.of(), List.of(reason), List.of(action("重试设置", () -> activateWorld(world))), null));
+            return;
+        }
+        perform("world.activate", object("worldId", stringValue(world, "id"), "serverAddress", VersionClient.serverAddress(),
+                "mapName", mapName, "dimension", XaeroBridge.currentMapDimension()));
     }
     private void bindWorldMap(JsonObject world) {
         String dimension = XaeroBridge.currentMapDimension(), mapKey = XaeroBridge.currentMapKey();
@@ -688,7 +720,8 @@ public final class TownScreen extends Screen {
             if (selectTown) {
                 gateway.refreshTowns();
                 if (VersionClient.currentScreen() == origin) { gateway.selectTown(stringValue(result, "townId")); tab = 0; section = 0; page = 0; }
-            } else gateway.refresh();
+            } else if (action.equals("world.activate")) gateway.followCurrentWorld();
+            else gateway.refresh();
             if (VersionClient.currentScreen() == origin) VersionClient.show(destination());
         })));
     }
@@ -729,6 +762,8 @@ public final class TownScreen extends Screen {
     private boolean isMayor() { return stringValue(objectValue(gateway.snapshot, "town"), "ownerId").equals(playerId()); }
     private String playerId() { return stringValue(gateway.player(), "id", stringValue(gateway.player(), "playerId")); }
     private boolean archived() { for (JsonElement element : array("worlds")) { JsonObject world = element.getAsJsonObject(); if (stringValue(world, "id").equals(gateway.worldId)) return bool(world, "archived"); } return false; }
+    private boolean isCurrentWorld(String id) { return !id.isEmpty() && id.equals(stringValue(objectValue(gateway.snapshot, "town"), "currentWorldId")); }
+    private JsonObject currentWorld() { for (JsonElement element : array("worlds")) { JsonObject world = element.getAsJsonObject(); if (isCurrentWorld(stringValue(world, "id"))) return world; } return new JsonObject(); }
     private String lookup(String collection, String key, String id, String fallback) { for (JsonElement element : array(collection)) { JsonObject item = element.getAsJsonObject(); if (stringValue(item, key).equals(id)) return stringValue(item, "name", fallback); } return fallback; }
     private String projectName(String id) { return lookup("projects", "id", id, "未指定"); }
     private String worldName(String id) { return lookup("worlds", "id", id, "尚未登记世界"); }

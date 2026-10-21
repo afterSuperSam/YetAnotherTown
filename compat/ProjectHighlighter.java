@@ -67,7 +67,7 @@ final class ProjectHighlighter extends ChunkHighlighter {
         Map<String, String> viewedMaps = new HashMap<>();
         if (world != null) for (MapDimension dimension : world.getDimensionsList()) {
             String id = dimension.getDimId().identifier().toString();
-            bindings.put(id, gateway.getBoundMapKey(id));
+            bindings.put(id, XaeroBridge.resolvedMapKey(dimension));
             viewedMaps.put(id, String.valueOf(dimension.getCurrentMultiworld()));
         }
         Overlay previous = overlay;
@@ -116,7 +116,7 @@ final class ProjectHighlighter extends ChunkHighlighter {
                 || !gateway.config().projectOverlayEnabled || !gateway.isCurrent(value.context)) return null;
         MapDimension nativeDimension = value.world.getDimension(dimension);
         String binding = value.bindings.getOrDefault(dimension.identifier().toString(), "");
-        return nativeDimension != null && !binding.isEmpty() && binding.equals(gateway.getBoundMapKey(dimension.identifier().toString()))
+        return nativeDimension != null && !binding.isEmpty() && binding.equals(XaeroBridge.resolvedMapKey(nativeDimension))
                 && binding.equals(value.world.getMainId() + "|" + nativeDimension.getCurrentMultiworld()) ? value : null;
     }
 

@@ -28,7 +28,7 @@ const COLLECTIONS = ['roles', 'members', 'worlds', 'projects', 'tickets'];
 const DIMENSION = /^[a-z0-9_.-]+:[a-z0-9_/.-]+$/;
 const PLAYER_ID = /^[a-f0-9]{32}$/;
 const READ_ACTIONS = new Set(['town.list', 'town.snapshot']);
-const ACTIONS = new Set(['auth.login', 'auth.logout', 'town.list', 'town.snapshot', 'town.create', 'town.join', 'town.update', 'town.transfer', 'role.save', 'role.delete', 'member.role', 'member.remove', 'world.create', 'world.update', 'world.archive', 'project.create', 'project.update', 'project.status', 'ticket.create', 'ticket.update']);
+const ACTIONS = new Set(['auth.login', 'auth.logout', 'town.list', 'town.snapshot', 'town.create', 'town.join', 'town.update', 'town.transfer', 'role.save', 'role.delete', 'member.role', 'member.remove', 'world.create', 'world.update', 'world.activate', 'world.archive', 'project.create', 'project.update', 'project.status', 'ticket.create', 'ticket.update']);
 const derivePassword = promisify(scrypt);
 
 export class ApiError extends Error {
@@ -165,7 +165,9 @@ function validateState(state) {
     valid(town.members.filter(member => member.roleId === 'mayor').length === 1 && town.members.some(member => member.playerId === town.ownerId && member.roleId === 'mayor'), '镇长');
     for (const key of ['worlds', 'projects', 'tickets']) valid(unique(town[key], 'id') && town[key].every(value => record(value) && player(value.createdBy) && typeof value.createdByName === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(value.createdByName) && date(value.createdAt) && (value.updatedAt === undefined || date(value.updatedAt))), '记录');
     valid(town.worlds.every(world => string(world.name, 100) && string(world.serverAddress, 200, true) && string(world.worldKey, 200, true) && typeof world.archived === 'boolean' && (!world.archived || date(world.archivedAt))), '周目');
+    valid(town.worlds.every(world => (world.mapName === undefined || string(world.mapName, 200)) && (world.mapNames === undefined || object(world.mapNames) && Object.keys(world.mapNames).length <= DEFAULT_CONFIG.maximumTownRecords && Object.entries(world.mapNames).every(([dimension, name]) => dimension.length <= 128 && DIMENSION.test(dimension) && string(name, 200)))), '周目地图');
     const worlds = new Map(town.worlds.map(world => [world.id, world]));
+    valid(town.currentWorldId === undefined || string(town.currentWorldId, 128) && worlds.has(town.currentWorldId) && !worlds.get(town.currentWorldId).archived, '当前周目');
     valid(town.projects.every(project => {
       const world = worlds.get(project.worldId);
       const chunks = project.chunks;
@@ -300,7 +302,7 @@ export class TownService {
       state.towns[id] = {
         id, name: text(payload.name, '小镇名称', 64), introduction: text(payload.introduction, '介绍', 2000, true),
         logo: text(payload.logo, '标志', 512, true), server: text(payload.server, '服务器', 200, true),
-        ownerId: player.id, password: await hashPassword(payload.password), createdAt: timestamp,
+        ownerId: player.id, currentWorldId: initialWorld.id, password: await hashPassword(payload.password), createdAt: timestamp,
         roles: [
           { id: 'newcomer', icon: 'minecraft:dirt', name: '新人', permissions: [] },
           { id: 'member', icon: 'minecraft:cobblestone', name: '成员', permissions: [...MEMBER_PERMISSIONS] },
@@ -462,17 +464,42 @@ export class TownService {
     }
     if (action === 'world.update') {
       requirePermission('worlds.manage'); const world = writableWorld(payload.id);
+      if ('serverAddress' in payload) {
+        const serverAddress = text(payload.serverAddress, '服务器地址', 200, true);
+        if (serverAddress !== world.serverAddress) {
+          check(town.currentWorldId !== world.id || town.ownerId === player.id, 'forbidden', '只有镇长可以修改当前周目的服务器地址');
+          delete world.mapName; delete world.mapNames;
+        }
+      }
       for (const [key, name, maximum] of [['name', '周目名称', 100], ['serverAddress', '服务器地址', 200], ['worldKey', '世界标识', 200]]) if (key in payload) world[key] = text(payload[key], name, maximum, key !== 'name');
       world.updatedAt = timestamp; return done(world);
+    }
+    if (action === 'world.activate') {
+      check(town.ownerId === player.id, 'forbidden', '只有镇长可以设置当前周目与共享地图');
+      const world = writableWorld(payload.worldId);
+      const serverAddress = text(payload.serverAddress, '服务器地址', 200);
+      const mapName = text(payload.mapName, 'Xaero 地图名称', 200);
+      const dimension = text(payload.dimension, '维度', 128);
+      check(DIMENSION.test(dimension), 'invalid_argument', '维度必须使用命名空间格式');
+      const sameServer = world.serverAddress === serverAddress;
+      const mapNames = sameServer ? { ...world.mapNames } : {};
+      check(Object.hasOwn(mapNames, dimension) || Object.keys(mapNames).length < Math.min(config.maximumTownRecords, DEFAULT_CONFIG.maximumTownRecords), 'conflict', '共享地图维度数量已达上限');
+      mapNames[dimension] = mapName;
+      if (town.currentWorldId !== world.id || !sameServer || !world.mapName) world.mapName = mapName;
+      Object.assign(world, { serverAddress, mapNames, updatedAt: timestamp });
+      town.currentWorldId = world.id;
+      return done(world);
     }
     if (action === 'world.archive') {
       requirePermission('worlds.manage');
       const world = writableWorld(payload.worldId);
+      check(town.currentWorldId !== world.id, 'conflict', '请先选择其他当前周目，再归档此周目');
       world.archived = true; world.archivedAt = timestamp;
       return done(world);
     }
     if (action === 'project.create') {
       requirePermission('project.create'); writableWorld(payload.worldId);
+      check(town.currentWorldId === undefined || payload.worldId === town.currentWorldId, 'conflict', '当前周目已变化，请刷新后重新登记工程');
       reserveRecord();
       const project = { ...base(payload.worldId), ...projectFields(payload) };
       checkRegion(project, project.worldId);
