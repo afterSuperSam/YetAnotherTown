@@ -201,7 +201,8 @@ final class ProjectHighlighter extends ChunkHighlighter {
             TooltipRenderUtil.extractTooltipBackground(graphics, x, y, layout.width(), layout.height(), null);
             VersionClient.drawAvatar(graphics, area.leaderId, area.leaderName, x, y, layout.avatarSize());
             VersionClient.drawLogo(graphics, projectIcon(area.type), textX - 4, y - 4, 20);
-            for (int index = 0; index < layout.title().size(); index++) graphics.text(font, layout.title().get(index), textX + TYPE_ICON_OFFSET, y + 1 + index * step, TownStyle.TEXT, true);
+            int titleColor = area.status.equals("maintenance") ? TownStyle.DANGER : area.status.equals("planned") ? TownStyle.ACCENT : TownStyle.TEXT;
+            for (int index = 0; index < layout.title().size(); index++) graphics.text(font, layout.title().get(index), textX + TYPE_ICON_OFFSET, y + 1 + index * step, titleColor, true);
             for (int index = 0; index < layout.owner().size(); index++) graphics.text(font, layout.owner().get(index), textX, y + layout.ownerTop() + index * step, TownStyle.MUTED, false);
             for (int index = 0; index < layout.introduction().size(); index++) graphics.text(font, layout.introduction().get(index), x, y + layout.introductionTop() + index * step, TownStyle.TEXT, false);
             if (!area.status.equals("completed")) graphics.text(font, state(area.status), x + layout.statusLeft(), y + 1,
@@ -210,7 +211,7 @@ final class ProjectHighlighter extends ChunkHighlighter {
     }
 
     static String projectIcon(String type) {
-        return switch (type) { case "machine" -> "minecraft:redstone"; case "building" -> "minecraft:quartz"; default -> "minecraft:crafting_table"; };
+        return switch (type) { case "machine" -> "minecraft:redstone"; case "building" -> "minecraft:quartz"; default -> "minecraft:lapis_lazuli"; };
     }
 
     /** 头像与两行身份信息等高，状态跟随名称，简介独占通栏。 */

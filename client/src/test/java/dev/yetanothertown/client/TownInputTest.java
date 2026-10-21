@@ -58,7 +58,14 @@ public final class TownInputTest {
             require(compact.codePointCount(0, compact.length()) <= 8 && !compact.endsWith("\uD83D…"), "Header feedback must fit eight complete Unicode characters");
         }
         require(ProjectHighlighter.projectIcon("machine").equals("minecraft:redstone") && ProjectHighlighter.projectIcon("building").equals("minecraft:quartz")
-                && ProjectHighlighter.projectIcon("other").equals("minecraft:crafting_table"), "Project categories must use their designated vanilla items");
+                && ProjectHighlighter.projectIcon("other").equals("minecraft:lapis_lazuli"), "Project categories must use their designated vanilla items");
+        require(TownScreen.singleLine("第一行\r\n第二行\t第三行").equals("第一行 第二行 第三行"), "Project list must never render newline or tab control characters");
+        var machine = TownGateway.object("type", "machine", "status", "maintenance", "createdAt", "2026-01-01T00:00:00Z");
+        var building = TownGateway.object("type", "building", "status", "planned", "createdAt", "2026-02-01T00:00:00Z");
+        require(TownScreen.matchesProjectType(machine, 0) && TownScreen.matchesProjectType(machine, 2) && !TownScreen.matchesProjectType(machine, 1), "Type filter must select categories without excluding all-type results");
+        require(TownScreen.projectColor(machine) == TownStyle.DANGER && TownScreen.projectColor(building) == TownStyle.ACCENT, "Maintenance and planned titles must use distinct status colors");
+        var originalOrder = java.util.List.of(building, machine);
+        require(TownScreen.recentProjects(originalOrder).equals(java.util.List.of(machine, building)) && originalOrder.getFirst() == building, "Home preview must prioritize maintenance without mutating the project list");
         var activeWorld = TownGateway.object("id", "0123456789abcdef01234567", "archived", false);
         require(XaeroBridge.associationBlockReason(activeWorld, true, "minecraft:overworld", "minecraft:overworld", "town", "town").isEmpty(), "A loaded current map must allow one-step association without an existing binding");
         activeWorld.addProperty("archived", true);

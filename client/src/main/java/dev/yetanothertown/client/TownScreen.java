@@ -55,6 +55,7 @@ public final class TownScreen extends Screen {
     private int tab;
     private int section;
     private int page;
+    private int projectType;
     private EditBox searchInput;
     private boolean searchChanged;
     private boolean pendingSearchFocus;
@@ -216,7 +217,6 @@ public final class TownScreen extends Screen {
             contentTop += 26;
             management();
         }
-        button("刷新资料", contentLeft + contentWidth - 58, window.bottom() - 26, 64, () -> { gateway.refreshTowns(); gateway.refresh(); });
         restoreFocus(focused);
         if (searchFocused && tab == 1) setInitialFocus(searchInput);
         if (focusedSetting != null && tab == 2 && section == 3 && children().contains(townInputs.get(focusedSetting)) && townInputs.get(focusedSetting).visible) setInitialFocus(townInputs.get(focusedSetting));
@@ -258,13 +258,13 @@ public final class TownScreen extends Screen {
         button("客户端设置", settingsX, wide ? y + 73 : y + 18, settingsWidth, this::connectionForm);
         int heroY = wide ? y : y + profileHeight + 8;
         int archiveWidth = mainWidth;
-        int homeActionWidth = (mainWidth - 30) / 2;
+        int homeActionWidth = (mainWidth - 36) / 3;
         int heroHeight = 164;
         panels.add(new Panel(x, heroY, mainWidth, heroHeight, true));
         showLogo = !gateway.townId.isEmpty();
         logoX = x + 12; logoY = heroY + 12;
         int titleX = x + (showLogo ? 55 : 12);
-        label("小镇档案", titleX, heroY + 14, ACCENT);
+        label("小镇档案" + (gateway.townId.isEmpty() ? "" : " · ID " + gateway.townId), titleX, heroY + 14, ACCENT);
         label(font.plainSubstrByWidth(gateway.townId.isEmpty() ? "从这里，开始建设" : townName, archiveWidth - (titleX - x) - 10), titleX, heroY + 31, TEXT);
         if (!gateway.loggedIn()) {
             paragraph("使用当前游戏 UUID 自动连接，登记项目并参与协作。", x + 12, heroY + 70, archiveWidth - 24, MUTED);
@@ -272,29 +272,35 @@ public final class TownScreen extends Screen {
         } else if (gateway.townId.isEmpty()) {
             paragraph("注册小镇，或通过八位 ID 加入伙伴。", x + 12, heroY + 70, archiveWidth - 24, MUTED);
         } else {
-            label(font.plainSubstrByWidth("ID " + gateway.townId + " · " + array("members").size() + " 位成员 · 服务器 "
+            label(font.plainSubstrByWidth(array("members").size() + " 位成员 · 服务器 "
                     + stringValue(town, "server", VersionClient.serverAddress()), archiveWidth - 24), x + 12, heroY + 66, MUTED);
             List<String> introduction = wrap(stringValue(town, "introduction", "一起规划，一起建设。"), archiveWidth - 24);
             for (int index = 0; index < Math.min(2, introduction.size()); index++) label(introduction.get(index), x + 12, heroY + 83 + index * 12, MUTED);
-            int openTickets = 0;
-            for (JsonElement element : array("tickets")) if (!stringValue(element.getAsJsonObject(), "status").equals("resolved")) openTickets++;
-            homeIcons.add(new ItemIcon("minecraft:quartz", x + 12, heroY + 109));
-            homeIcons.add(new ItemIcon("minecraft:anvil", x + 18 + homeActionWidth, heroY + 109));
-            label(font.plainSubstrByWidth(array("projects").size() + " 项目", homeActionWidth - 26), x + 36, heroY + 116, TEXT);
-            label(font.plainSubstrByWidth(openTickets + " 待修", homeActionWidth - 26), x + 42 + homeActionWidth, heroY + 116, openTickets > 0 ? ACCENT : TownStyle.SUCCESS);
+            long maintenance = objects(array("projects")).stream().filter(item -> stringValue(item, "status").equals("maintenance")).count();
+            int statisticsY = heroY + 83 + Math.min(2, introduction.size()) * 12 + 3;
+            String projectCount = array("projects").size() + " 项目";
+            int maintenanceX = x + 36 + font.width(projectCount) + 14;
+            homeIcons.add(new ItemIcon("minecraft:quartz", x + 12, statisticsY - 5));
+            homeIcons.add(new ItemIcon("minecraft:redstone", maintenanceX, statisticsY - 5));
+            label(projectCount, x + 36, statisticsY + 2, TEXT);
+            label(maintenance + " 待修", maintenanceX + 24, statisticsY + 2, maintenance > 0 ? TownStyle.DANGER : TownStyle.SUCCESS);
             button("项目地图", x + 12, heroY + 132, homeActionWidth, this::openMap);
-            button("成员与权限", x + 18 + homeActionWidth, heroY + 132, homeActionWidth, () -> { tab = 2; section = 0; rebuild(); });
+            button("成员权限", x + 18 + homeActionWidth, heroY + 132, homeActionWidth, () -> { tab = 2; section = 0; rebuild(); });
+            button("小镇世界", x + 24 + homeActionWidth * 2, heroY + 132, homeActionWidth, this::chooseWorld);
         }
         int worldY = heroY + heroHeight + 8;
-        boolean compactWorld = mainWidth >= 280;
-        int worldHeight = compactWorld ? 64 : 96;
-        int worldTextWidth = compactWorld ? homeActionWidth : mainWidth - 20;
+        int worldHeight = 76;
         panels.add(new Panel(x, worldY, mainWidth, worldHeight, false));
-        label("世界与周目", x + 10, worldY + 12, ACCENT);
-        label(font.plainSubstrByWidth((isCurrentWorld(gateway.worldId) ? "当前 · " : "浏览 · ") + worldName(gateway.worldId), worldTextWidth), x + 10, worldY + 29, TEXT);
-        label(font.plainSubstrByWidth(roleName(stringValue(objectValue(gateway.snapshot, "currentMember"), "roleId", "尚未加入")), worldTextWidth), x + 10, worldY + 44, MUTED);
-        Button world = button("当前世界 / 历史", x + 18 + homeActionWidth, worldY + (compactWorld ? 22 : 65), homeActionWidth, this::chooseWorld);
-        world.active = !gateway.townId.isEmpty();
+        label("最近项目 · 待修优先", x + 10, worldY + 9, ACCENT);
+        List<JsonObject> recent = recentProjects(objects(array("projects")));
+        if (recent.isEmpty()) label("暂无项目", x + 10, worldY + 32, MUTED);
+        for (int index = 0; index < Math.min(2, recent.size()); index++) {
+            JsonObject record = recent.get(index);
+            int rowY = worldY + 25 + index * 23;
+            homeIcons.add(new ItemIcon(ProjectHighlighter.projectIcon(stringValue(record, "type")), x + 6, rowY - 2));
+            label(font.plainSubstrByWidth(XaeroBridge.projectName(record), mainWidth - 92), x + 32, rowY + 6, projectColor(record));
+            button("查看", x + mainWidth - 52, rowY, 42, () -> showRecord("projects", record));
+        }
         int linksY = wide ? y + profileHeight + 8 : worldY + worldHeight + 8;
         Button create = button("注册小镇", settingsX, linksY, settingsWidth, () -> leaveTownSettings(this::createTown));
         Button join = button("加入小镇", settingsX, linksY + 26, settingsWidth, () -> leaveTownSettings(this::joinTown));
@@ -311,8 +317,8 @@ public final class TownScreen extends Screen {
         int y = contentTop;
         button("打开项目地图", contentLeft, y, actionWidth, this::openMap);
         if (navigating) button("停止导航", contentLeft + actionWidth + 8, y, actionWidth, () -> { VersionClient.stopNavigation(); rebuild(); });
-        Button create = button("创建项目", contentLeft + contentWidth - actionWidth, y, actionWidth, this::createRecord);
-        create.active = !gateway.worldId.isEmpty() && has("project.create") && !archived();
+        String[] types = {"全部类型", "建筑", "机器", "其他"};
+        button(types[projectType], contentLeft + contentWidth - actionWidth, y, actionWidth, () -> { projectType = (projectType + 1) % types.length; page = 0; rebuild(); });
         int searchLeft = compact ? contentLeft + actionWidth + 6 : contentLeft;
         int searchTop = compact ? y : y + 26;
         int searchWidth = compact ? contentWidth - 2 * (actionWidth + 6) : contentWidth;
@@ -331,6 +337,7 @@ public final class TownScreen extends Screen {
         clear.active = !searchInput.getValue().isEmpty();
         String collection = "projects";
         List<JsonObject> records = objects(array(collection));
+        records.removeIf(record -> !matchesProjectType(record, projectType));
         if (!searchInput.getValue().isBlank()) records.removeIf(record -> !matchesSearch(record, subtitle(record), searchInput.getValue()));
         list(records, y + (compact ? 26 : 52), record -> showRecord(collection, record));
     }
@@ -343,11 +350,27 @@ public final class TownScreen extends Screen {
         return true;
     }
 
+    static boolean matchesProjectType(JsonObject record, int type) {
+        return type == 0 || stringValue(record, "type").equals(switch (type) { case 1 -> "building"; case 2 -> "machine"; default -> "other"; });
+    }
+
+    static List<JsonObject> recentProjects(List<JsonObject> records) {
+        List<JsonObject> sorted = new ArrayList<>(records);
+        sorted.sort(java.util.Comparator.comparingInt((JsonObject record) -> stringValue(record, "status").equals("maintenance") ? 0 : 1)
+                .thenComparing(record -> stringValue(record, "updatedAt", stringValue(record, "createdAt")), java.util.Comparator.reverseOrder()));
+        return sorted;
+    }
+
+    static int projectColor(JsonObject record) {
+        return switch (stringValue(record, "status")) { case "maintenance" -> TownStyle.DANGER; case "planned" -> ACCENT; default -> TEXT; };
+    }
+
+    static String singleLine(String value) { return value.replaceAll("\\s+", " ").strip(); }
+
     private void management() {
         int y = contentTop;
         if (section == 0) {
-            label(has("members.manage") ? "新人只读；审核时为成员分配权限组。" : "成员名单 · 当前权限仅供查阅", contentLeft + 3, y + 5, MUTED);
-            list(objects(array("members")), y + 24, this::memberDetail);
+            list(objects(array("members")), y, this::memberDetail);
         } else if (section == 1) {
             Button create = button("＋ 创建权限组", contentLeft, y, 125, () -> roleForm(new JsonObject()));
             create.active = has("roles.manage");
@@ -363,13 +386,13 @@ public final class TownScreen extends Screen {
     private void inlineTownSettings(int y) {
         JsonObject town = objectValue(gateway.snapshot, "town");
         if (!validSettingsTown(gateway.snapshot, gateway.townId)) {
-            label("小镇资料尚未加载，请稍候或刷新资料。", contentLeft, y + 3, MUTED);
+            label("小镇资料尚未加载，请稍候。", contentLeft, y + 3, MUTED);
             return;
         }
         boolean synchronize = !settingsSubmitting && settingsSnapshot != gateway.snapshot;
         boolean editable = has("town.manage") && !settingsSubmitting;
         boolean paired = contentWidth >= 240;
-        int fullHeight = 20 + (paired ? 2 : 4) * 36 + 24;
+        int fullHeight = 20 + (paired ? 2 : 4) * 36 + 50;
         settingsScroll = Math.max(0, Math.min(settingsScroll, y + fullHeight - contentBottom));
         y -= settingsScroll;
         label("小镇 ID " + gateway.townId, contentLeft, y + 3, MUTED);
@@ -407,6 +430,9 @@ public final class TownScreen extends Screen {
         save.active = editable; save.visible = bottom >= bodyTop && bottom + 20 <= bodyBottom;
         Button disable = button(bool(town, "passwordEnabled") ? "关闭加入密码" : "加入密码未开启", contentLeft + halfWidth + 8, bottom, halfWidth, () -> confirm("关闭加入密码", "关闭后，知道小镇 ID 的玩家无需密码即可申请加入。", () -> perform("town.update", object("password", ""))));
         disable.active = editable && bool(town, "passwordEnabled"); disable.visible = bottom >= bodyTop && bottom + 20 <= bodyBottom;
+        Button listed = button(bool(town, "listed") ? "展示小镇：开启" : "展示小镇：关闭", contentLeft, bottom + 26, halfWidth,
+                () -> saveTownSettings(object("listed", !bool(town, "listed"))));
+        listed.active = editable; listed.visible = bottom + 26 >= bodyTop && bottom + 46 <= bodyBottom;
 
     }
 
@@ -463,7 +489,9 @@ public final class TownScreen extends Screen {
                 Button report = button("报修", contentLeft + contentWidth - 55, buttonY, 48, () -> ticketForm(record));
                 report.active = has("ticket.create") && !archived();
             }
-            button("详情", contentLeft + contentWidth - (repair ? 109 : 55), buttonY, 48, () -> details.accept(record));
+            boolean assign = tab == 2 && section == 0 && canAssignMember(record);
+            if (assign) button("分配权限组", contentLeft + contentWidth - 79, buttonY, 72, () -> assignMember(record));
+            button("详情", contentLeft + contentWidth - (assign ? 133 : repair ? 109 : 55), buttonY, 48, () -> details.accept(record));
         }
         int footer = contentBottom - 20;
         if (pages > 1) {
@@ -484,7 +512,6 @@ public final class TownScreen extends Screen {
         if (externalParent && returnScreen != null) { VersionClient.show(returnScreen); return; }
         if (!XaeroBridge.openMap(destination())) VersionClient.show(new TownMapScreen(destination()));
     }
-    private void createRecord() { openMap(); }
 
     private void showRecord(String collection, JsonObject record) {
         List<String> description = describe(record);
@@ -492,18 +519,14 @@ public final class TownScreen extends Screen {
         String id = stringValue(record, "id");
         boolean writable = !archived();
         if (collection.equals("projects")) {
-            if (canManageProject(record) && writable) {
-                if (has("project.approve")) actions.add(action("移交负责人", () -> form("移交项目负责人", List.of(memberChoice("leaderId", "新负责人", stringValue(record, "leaderId"))), data -> { data.addProperty("id", id); perform("project.update", data); })));
+            actions.add(action("查看地图", this::openMap));
+            if ((canManageProject(record) || has("ticket.manage") && stringValue(record, "status").equals("maintenance")) && writable) {
                 actions.add(action("编辑项目", () -> projectForm(record, objectValue(record, "chunks"))));
-                if (stringValue(record, "status").equals("planned")) actions.add(action("开始施工", () -> perform("project.status", object("id", id, "status", "active"))));
-                if (stringValue(record, "status").equals("active")) actions.add(action("标记完工", () -> confirm("项目完工", "确认项目已建成，后续可随时报修。", () -> perform("project.status", object("id", id, "status", "completed")))));
             }
-            if (writable && has("ticket.create") && List.of("completed", "maintenance").contains(stringValue(record, "status"))) actions.add(action("提交维护工单", () -> ticketForm(record)));
             for (JsonElement element : array("tickets")) {
                 JsonObject ticket = element.getAsJsonObject();
-                if (stringValue(ticket, "projectId").equals(id)) actions.add(action(stringValue(ticket, "title") + " · " + state(stringValue(ticket, "status")), () -> showRecord("tickets", ticket)));
+                if (stringValue(ticket, "projectId").equals(id) && !stringValue(ticket, "status").equals("resolved")) description.add("待修：" + stringValue(ticket, "description", stringValue(ticket, "title")));
             }
-            actions.add(action("查看地图", this::openMap));
         } else if (collection.equals("tickets") && writable && (has("ticket.manage") || canManageProject(project(stringValue(record, "projectId"))))) {
             if (stringValue(record, "status").equals("open")) actions.add(action("开始维护", () -> perform("ticket.update", object("id", id, "status", "working"))));
             if (!stringValue(record, "status").equals("resolved")) actions.add(action("完成维护", () -> form("维护结果", List.of(text("resolution", "处理说明", "")), data -> { data.addProperty("id", id); data.addProperty("status", "resolved"); perform("ticket.update", data); })));
@@ -516,7 +539,9 @@ public final class TownScreen extends Screen {
                 showRecord(collection, record);
             }, () -> isNavigationTarget(record, VersionClient.navigation()) ? "停止导航" : "导航到这里"));
         }
-        VersionClient.show(new TownForm(destination(), collection.equals("projects") ? XaeroBridge.projectName(record) : stringValue(record, "name", stringValue(record, "title", "项目详情")), List.of(), description, actions, null));
+        TownForm detail = new TownForm(destination(), collection.equals("projects") ? XaeroBridge.projectName(record) : stringValue(record, "name", stringValue(record, "title", "项目详情")), List.of(), description, actions, null);
+        if (collection.equals("projects")) detail.withProjectTitle(record);
+        VersionClient.show(detail);
     }
 
     private List<String> describe(JsonObject record) {
@@ -535,17 +560,31 @@ public final class TownScreen extends Screen {
 
     private void projectForm(JsonObject record, JsonObject chunks) {
         boolean editing = record.has("id");
-        if (archived() || gateway.worldId.isEmpty() || !(editing ? canManageProject(record) : has("project.create"))) { gateway.status = "当前项目只读或没有操作权限"; return; }
+        boolean maintenanceOnly = editing && !canManageProject(record) && has("ticket.manage") && stringValue(record, "status").equals("maintenance");
+        if (archived() || gateway.worldId.isEmpty() || !(editing ? canManageProject(record) || maintenanceOnly : has("project.create"))) { gateway.status = "当前项目只读或没有操作权限"; return; }
         String status = stringValue(record, "status", "planned");
-        List<TownForm.Field> fields = List.of(text("name", "项目名", stringValue(record, "name")).compact(), choice("type", "类型", stringValue(record, "type", "building"), new String[]{"building", "machine", "other"}, new String[]{"建筑", "机器", "其他"}), multiline("purpose", "简介", stringValue(record, "purpose")), choice("status", "状态", status, editing ? new String[]{status} : new String[]{"planned", "active", "completed"}, editing ? new String[]{status.equals("maintenance") ? "待维护（由工单控制）" : status.equals("completed") ? "已完工" : state(status)} : new String[]{"计划中", "施工中", "已完工"}));
+        List<TownForm.Field> fields = maintenanceOnly ? List.of() : List.of(text("name", "项目名", stringValue(record, "name")).compact(), choice("type", "类型", stringValue(record, "type", "building"), new String[]{"building", "machine", "other"}, new String[]{"建筑", "机器", "其他"}), multiline("purpose", "简介", stringValue(record, "purpose")), choice("status", "状态", status, editing ? new String[]{status} : new String[]{"planned", "active", "completed"}, editing ? new String[]{status.equals("maintenance") ? "待维护（由工单控制）" : status.equals("completed") ? "已完工" : state(status)} : new String[]{"计划中", "施工中", "已完工"}));
         String dimension = stringValue(record, "dimension", stringValue(chunks, "dimension", VersionClient.dimension()));
         List<String> details = List.of("选区：" + integer(chunks, "minX") + ", " + integer(chunks, "minZ") + " → " + integer(chunks, "maxX") + ", " + integer(chunks, "maxZ") + " · " + dimension);
-        VersionClient.show(new TownForm(destination(), editing ? "编辑项目" : "创建项目", fields, details, List.of(), data -> {
+        List<TownForm.Action> actions = new ArrayList<>();
+        if (editing) {
+            String id = stringValue(record, "id");
+            if (status.equals("planned")) actions.add(action("开始施工", () -> perform("project.status", object("id", id, "status", "active"))));
+            if (status.equals("active")) actions.add(action("标记完工", () -> perform("project.status", object("id", id, "status", "completed"))));
+            if (has("project.approve")) actions.add(action("移交负责人", () -> form("移交项目负责人", List.of(memberChoice("leaderId", "新负责人", stringValue(record, "leaderId"))), data -> { data.addProperty("id", id); perform("project.update", data); })));
+            for (JsonElement element : array("tickets")) {
+                JsonObject ticket = element.getAsJsonObject();
+                if (stringValue(ticket, "projectId").equals(id) && !stringValue(ticket, "status").equals("resolved"))
+                    actions.add(action("处理报修 · " + singleLine(stringValue(ticket, "title")), () -> showRecord("tickets", ticket)));
+            }
+            if (!maintenanceOnly) actions.add(action("删除项目", () -> confirm("删除项目", "删除“" + XaeroBridge.projectName(record) + "”及其维修工单，并释放占用区块。此操作不可撤销。", () -> perform("project.delete", object("id", id, "worldId", stringValue(record, "worldId"))))));
+        }
+        VersionClient.show(new TownForm(destination(), editing ? "编辑项目" : "创建项目", fields, details, actions, maintenanceOnly ? null : data -> {
             if (editing) data.remove("status");
             data.add("chunks", chunks.deepCopy()); data.addProperty("dimension", dimension); data.addProperty("notes", stringValue(record, "notes"));
             if (editing) data.addProperty("id", stringValue(record, "id")); else data.addProperty("worldId", gateway.worldId);
             perform(editing ? "project.update" : "project.create", data);
-        }));
+        }).withGuardedActions());
     }
 
     private void ticketForm(JsonObject project) {
@@ -556,7 +595,7 @@ public final class TownScreen extends Screen {
             location = object("dimension", stringValue(project, "dimension"), "x", (integer(chunks, "minX") + integer(chunks, "maxX") + 1) * 8, "y", 64, "z", (integer(chunks, "minZ") + integer(chunks, "maxZ") + 1) * 8);
         }
         JsonObject position = location;
-        List<TownForm.Field> fields = List.of(choice("title", "故障类型", "机器堵塞", new String[]{"机器堵塞", "照明缺失", "线路断裂", "其他故障"}, new String[]{"机器堵塞", "照明缺失", "线路断裂", "其他故障"}).compact(), text("description", "补充说明", "").compact());
+        List<TownForm.Field> fields = List.of(multiline("description", "内容说明", ""));
         VersionClient.show(new TownForm(destination(), "维护报修 · " + stringValue(project, "name"), fields, List.of((atProjectWorld ? "当前位置：" : "项目中心：") + stringValue(position, "dimension") + " " + integer(position, "x") + ", " + integer(position, "y") + ", " + integer(position, "z")), List.of(), data -> {
             for (String key : List.of("dimension", "x", "y", "z")) data.add(key, position.get(key));
             data.addProperty("projectId", stringValue(project, "id")); data.addProperty("worldId", stringValue(project, "worldId")); perform("ticket.create", data);
@@ -570,7 +609,23 @@ public final class TownScreen extends Screen {
         form("注册小镇", List.of(text("name", "小镇名称", ""), text("introduction", "小镇介绍", ""), text("logo", "Logo：物品 ID 或 texture:命名空间:贴图路径.png", "minecraft:oak_sapling"), text("server", "所在服务器", VersionClient.serverAddress()), text("password", "加入密码（留空关闭，开启时至少 6 字）", "")), data -> perform("town.create", data));
     }
     private void joinTown() {
-        form("通过小镇 ID 加入", List.of(text("townId", "八位数字小镇 ID", ""), text("password", "小镇密码（未开启则留空）", "")), data -> perform("town.join", data));
+        TownForm join = new TownForm(destination(), "加入小镇", List.of(text("townId", "八位数字 ID", "").compact(), text("password", "小镇密码", "").compact()), List.of("正在加载展示小镇…"), List.of(), data -> perform("town.join", data));
+        VersionClient.show(join);
+        TownGateway.Context context = gateway.context();
+        gateway.request("town.discover", object()).whenComplete((result, failure) -> Minecraft.getInstance().execute(() -> {
+            if (!gateway.isCurrent(context) || VersionClient.currentScreen() != join) return;
+            if (failure != null) { join.updateContent(List.of("小镇列表加载失败，可直接填写 ID 加入。"), List.of()); return; }
+            List<TownForm.Action> towns = new ArrayList<>();
+            for (JsonElement element : arrayValue(result, "items")) {
+                JsonObject town = element.getAsJsonObject();
+                towns.add(action(stringValue(town, "name") + " · " + stringValue(town, "id"), () -> {
+                    VersionClient.show(new TownForm(join, "加入 " + stringValue(town, "name"),
+                            List.of(text("townId", "八位数字 ID", stringValue(town, "id")).compact(), text("password", "小镇密码", "").compact()),
+                            List.of(stringValue(town, "introduction"), integer(town, "memberCount") + " 位成员 · " + stringValue(town, "server"), bool(town, "passwordEnabled") ? "需要小镇密码" : "无需密码"), List.of(), data -> perform("town.join", data)));
+                }));
+            }
+            join.updateContent(List.of(towns.isEmpty() ? "暂无展示小镇" : "展示小镇"), towns);
+        }));
     }
     private void chooseTown() {
         List<TownForm.Action> actions = new ArrayList<>();
@@ -599,11 +654,19 @@ public final class TownScreen extends Screen {
         List<TownForm.Action> actions = new ArrayList<>();
         actions.add(action("复制玩家 UUID", () -> { VersionClient.copy(id); gateway.status = "已复制 UUID"; }));
         if (has("members.manage") && !stringValue(member, "roleId").equals("mayor") && canGrant(role(stringValue(member, "roleId")))) {
-            actions.add(action("审核 / 分配权限组", () -> form("修改 " + stringValue(member, "name") + " 的权限组", List.of(roleChoice(stringValue(member, "roleId"))), data -> { data.addProperty("playerId", id); perform("member.role", data); })));
             actions.add(action("移出小镇", () -> confirm("移出成员", "将 " + stringValue(member, "name") + " 移出小镇。", () -> perform("member.remove", object("playerId", id)))));
         }
         if (isMayor() && !id.equals(playerId())) actions.add(action("移交镇长职位", () -> confirm("移交镇长", "将唯一镇长职位交给 " + stringValue(member, "name") + "，你的权限将改变。", () -> perform("town.transfer", object("playerId", id)))));
         VersionClient.show(new TownForm(this, stringValue(member, "name"), List.of(), List.of("权限组：" + roleName(stringValue(member, "roleId")), "UUID：" + id, "加入时间：" + stringValue(member, "joinedAt")), actions, null));
+    }
+    private boolean canAssignMember(JsonObject member) {
+        return has("members.manage") && !stringValue(member, "roleId").equals("mayor") && canGrant(role(stringValue(member, "roleId")));
+    }
+    private void assignMember(JsonObject member) {
+        if (!canAssignMember(member)) return;
+        form("分配权限组 · " + stringValue(member, "name"), List.of(roleChoice(stringValue(member, "roleId"))), data -> {
+            data.addProperty("playerId", stringValue(member, "playerId")); perform("member.role", data);
+        });
     }
     private void roleDetail(JsonObject role) {
         List<String> description = new ArrayList<>();
@@ -720,7 +783,8 @@ public final class TownScreen extends Screen {
         Screen origin = VersionClient.currentScreen();
         TownForm.track(gateway.request(action, data).thenAccept(result -> Minecraft.getInstance().execute(() -> {
             if (!gateway.isCurrent(context)) return;
-            gateway.status = "操作已保存";
+            gateway.status = "";
+            if (action.equals("project.delete") && isNavigationTarget(data, VersionClient.navigation())) VersionClient.stopNavigation();
             if (selectTown) {
                 gateway.refreshTowns();
                 if (VersionClient.currentScreen() == origin) { gateway.selectTown(stringValue(result, "townId")); tab = 0; section = 0; page = 0; }
@@ -779,7 +843,7 @@ public final class TownScreen extends Screen {
         if (record.has("permissions")) return arrayValue(record, "permissions").size() + " 项权限";
         if (record.has("worldKey")) return stringValue(record, "serverAddress") + " · " + stringValue(record, "worldKey");
         if (record.has("projectId")) return projectName(stringValue(record, "projectId")) + " · " + memberName(stringValue(record, "createdBy"));
-        if (record.has("purpose")) return (stringValue(record, "purpose").isBlank() ? "" : stringValue(record, "purpose") + " · ") + memberName(stringValue(record, "leaderId"));
+        if (record.has("purpose")) return (stringValue(record, "purpose").isBlank() ? "" : singleLine(stringValue(record, "purpose")) + " · ") + memberName(stringValue(record, "leaderId"));
         return stringValue(record, "dimension") + (record.has("x") ? " · " + stringValue(record, "x") + ", " + stringValue(record, "y") + ", " + stringValue(record, "z") : "");
     }
     static String state(String value) { return switch (value) { case "planned" -> "计划中"; case "active" -> "施工中"; case "completed" -> ""; case "maintenance" -> "待维护"; case "open" -> "待处理"; case "working" -> "处理中"; case "resolved" -> "已解决"; case "archived" -> "历史归档"; default -> value; }; }
@@ -824,26 +888,26 @@ public final class TownScreen extends Screen {
         background(graphics, width, height);
         TownStyle.window(graphics, window, bodyTop, bodyBottom);
         int headingX = contentLeft - 6;
-        TownStyle.icon(graphics, 0, headingX, window.top() + 11, TownStyle.FRAME_TEXT);
-        graphics.text(font, font.plainSubstrByWidth(TownStyle.title(), contentWidth - 50), headingX + 14, window.top() + 10, TownStyle.FRAME_TEXT, false);
+        TownStyle.heading(graphics, font, TownStyle.title(), headingX, window.top() + 10, contentWidth - 36);
         Component hoveredText = null;
         graphics.enableScissor(contentLeft, bodyTop, contentLeft + contentWidth, bodyBottom);
         for (Panel panel : panels) TownStyle.panel(graphics, panel.x(), panel.y(), panel.width(), panel.height(), panel.accented());
         for (Card card : cards) {
             TownStyle.panel(graphics, card.x(), card.y(), card.width(), card.height(), false);
             boolean projectRow = tab == 1;
-            int textOffset = projectRow ? 12 : 38;
+            int textOffset = projectRow ? 30 : 38;
+            if (projectRow) VersionClient.drawLogo(graphics, ProjectHighlighter.projectIcon(stringValue(card.record(), "type")), card.x() + 7, card.y() + 5, 20);
             if (!projectRow) {
                 TownStyle.panel(graphics, card.x() + 7, card.y() + 10, 23, 23, false);
                 if (tab == 2 && section == 0) VersionClient.drawAvatar(graphics, stringValue(card.record(), "playerId"), stringValue(card.record(), "name"), card.x() + 9, card.y() + 12, 20);
                 else if (tab == 2 && section == 1) VersionClient.drawLogo(graphics, roleIcon(card.record()), card.x() + 8, card.y() + 10, 24);
                 else TownStyle.icon(graphics, 3, card.x() + 15, card.y() + 18, ACCENT);
             }
-            int buttonSpace = card.repair() ? 120 : 66;
+            int buttonSpace = tab == 2 && section == 0 && canAssignMember(card.record()) ? 144 : card.repair() ? 120 : 66;
             int titleY = card.y() + 9;
             int badgeWidth = card.state().isEmpty() ? 0 : Math.min(79, font.width(card.state()) + 12);
             int textWidth = Math.max(0, card.width() - textOffset - buttonSpace - (badgeWidth > 0 ? badgeWidth + 8 : 0));
-            graphics.text(font, font.plainSubstrByWidth(card.title(), textWidth), card.x() + textOffset, titleY, TEXT, true);
+            graphics.text(font, font.plainSubstrByWidth(card.title(), textWidth), card.x() + textOffset, titleY, projectRow ? projectColor(card.record()) : TEXT, true);
             graphics.text(font, font.plainSubstrByWidth(card.subtitle(), textWidth), card.x() + textOffset, card.y() + 26, MUTED, false);
             if ((font.width(card.title()) > textWidth || font.width(card.subtitle()) > textWidth)
                     && mouseX >= card.x() + textOffset && mouseX < card.x() + textOffset + textWidth && mouseY >= titleY - 3 && mouseY < card.y() + 38 && mouseY >= bodyTop && mouseY < bodyBottom)
@@ -877,6 +941,6 @@ public final class TownScreen extends Screen {
             graphics.fill(scrollbarX, thumbY, scrollbarX + 2, thumbY + thumbHeight, ACCENT);
         }
         TownStyle.feedback(graphics, font, gateway.status, contentLeft, window.bottom() - 26 + (20 - font.lineHeight) / 2,
-                contentWidth - 76, TownStyle.FRAME_MUTED, mouseX, mouseY);
+                contentWidth, TownStyle.FRAME_MUTED, mouseX, mouseY);
     }
 }

@@ -39,6 +39,55 @@ async function fixture(t, config = {}) {
   return { directory, store, service, login, alice, call, townId, worldId, snapshot, project, join, advance: milliseconds => { time += milliseconds; } };
 }
 
+test('小镇展示为主动开启，目录不泄露成员或密码且不绕过加入审核', async t => {
+  const f = await fixture(t);
+  const bob = await f.join('Bob', false);
+  const carol = await f.login('Carol');
+  assert.deepEqual(await f.call('town.discover', {}, carol.token), []);
+  await rejects(f.call('town.update', { townId: f.townId, listed: true }, bob.token), 'forbidden');
+  await rejects(f.call('town.update', { townId: f.townId, listed: 'true' }), 'invalid_argument');
+  await f.call('town.update', { townId: f.townId, listed: true, password: 'secret123' });
+  const discovered = await f.call('town.discover', {}, carol.token);
+  assert.equal(discovered.length, 1);
+  assert.deepEqual(Object.keys(discovered[0]).sort(), ['id', 'introduction', 'logo', 'memberCount', 'name', 'passwordEnabled', 'server'].sort());
+  assert.equal(discovered[0].passwordEnabled, true);
+  await rejects(f.call('town.snapshot', { townId: f.townId }, carol.token), 'forbidden');
+  await rejects(f.call('town.join', { townId: f.townId }, carol.token), 'forbidden');
+  await f.call('town.join', { townId: f.townId, password: 'secret123' }, carol.token);
+  assert.equal((await f.call('town.snapshot', { townId: f.townId }, carol.token)).currentMember.roleId, 'newcomer');
+  await f.call('member.role', { townId: f.townId, playerId: bob.player.id, roleId: 'manager' });
+  await f.call('town.update', { townId: f.townId, listed: false }, bob.token);
+  assert.deepEqual(await f.call('town.discover', {}, carol.token), []);
+  assert.equal((await new TownService({ store: f.store }).initialize()).state.towns[f.townId].listed, false);
+});
+
+test('删除项目校验权限并原子删除工单、释放区块，历史项目只读', async t => {
+  const f = await fixture(t);
+  const bob = await f.join();
+  const project = await f.project({ status: 'completed' });
+  await rejects(f.call('project.delete', { townId: f.townId, id: project.id }, bob.token), 'forbidden');
+  await rejects(f.call('ticket.create', { townId: f.townId, projectId: project.id, ...position, description: '   ' }), 'invalid_argument');
+  const ticket = await f.call('ticket.create', { townId: f.townId, projectId: project.id, ...position, description: '线路断开\n请检查二楼' });
+  assert.equal(ticket.title, '线路断开 请检查二楼');
+  assert.equal(ticket.description, '线路断开\n请检查二楼');
+  const unicodeTicket = await f.call('ticket.create', { townId: f.townId, projectId: project.id, ...position, description: '😀'.repeat(100) });
+  assert.equal(unicodeTicket.title, '😀'.repeat(50));
+  await rejects(f.call('project.update', { townId: f.townId, id: project.id, leaderId: bob.player.id }, bob.token), 'forbidden');
+  await f.call('project.update', { townId: f.townId, id: project.id, leaderId: bob.player.id });
+  await f.call('project.delete', { townId: f.townId, id: project.id }, bob.token);
+  assert.equal((await f.snapshot()).tickets.length, 0);
+  assert.equal((await f.snapshot()).projects.length, 0);
+  await rejects(f.call('project.delete', { townId: f.townId, id: project.id }), 'not_found');
+  const replacement = await f.project();
+  const next = await f.call('world.create', { townId: f.townId, name: '第二周目' });
+  await f.call('world.activate', { townId: f.townId, worldId: next.id, serverAddress: 'example.test', mapName: 'Next', dimension: position.dimension });
+  await f.call('world.archive', { townId: f.townId, worldId: f.worldId });
+  await rejects(f.call('project.delete', { townId: f.townId, id: replacement.id }), 'archived');
+  const restored = await new TownService({ store: f.store }).initialize();
+  assert.equal(restored.state.towns[f.townId].projects.length, 1);
+  assert.equal(restored.state.towns[f.townId].tickets.length, 0);
+});
+
 test('只读查询不复制无关小镇，返回资料仍与服务状态隔离', async t => {
   const f = await fixture(t);
   let reads = 0;
@@ -483,7 +532,7 @@ test('HTTP 封装、请求格式、认证、请求大小及真实接口交互', 
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const endpoint = `http://127.0.0.1:${server.address().port}`;
   const request = (body, headers = {}) => fetch(`${endpoint}/api`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body });
-  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.15');
+  assert.equal((await (await fetch(`${endpoint}/health`)).json()).data.version, '1.0.0-alpha.16');
   assert.equal((await request('{broken')).status, 400);
   assert.equal((await request('[]')).status, 400);
   assert.equal((await request(JSON.stringify({ action: 'town.list' }))).status, 401);

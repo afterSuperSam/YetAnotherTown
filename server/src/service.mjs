@@ -27,8 +27,8 @@ const MEMBER_PERMISSIONS = [
 const COLLECTIONS = ['roles', 'members', 'worlds', 'projects', 'tickets'];
 const DIMENSION = /^[a-z0-9_.-]+:[a-z0-9_/.-]+$/;
 const PLAYER_ID = /^[a-f0-9]{32}$/;
-const READ_ACTIONS = new Set(['town.list', 'town.snapshot']);
-const ACTIONS = new Set(['auth.login', 'auth.logout', 'town.list', 'town.snapshot', 'town.create', 'town.join', 'town.update', 'town.transfer', 'role.save', 'role.delete', 'member.role', 'member.remove', 'world.create', 'world.update', 'world.activate', 'world.archive', 'project.create', 'project.update', 'project.status', 'ticket.create', 'ticket.update']);
+const READ_ACTIONS = new Set(['town.list', 'town.discover', 'town.snapshot']);
+const ACTIONS = new Set(['auth.login', 'auth.logout', 'town.list', 'town.discover', 'town.snapshot', 'town.create', 'town.join', 'town.update', 'town.transfer', 'role.save', 'role.delete', 'member.role', 'member.remove', 'world.create', 'world.update', 'world.activate', 'world.archive', 'project.create', 'project.update', 'project.delete', 'project.status', 'ticket.create', 'ticket.update']);
 const derivePassword = promisify(scrypt);
 
 export class ApiError extends Error {
@@ -157,6 +157,7 @@ function validateState(state) {
   for (const [id, town] of Object.entries(state.towns)) {
     valid(/^\d{8}$/.test(id) && object(town) && town.id === id && COLLECTIONS.every(key => Array.isArray(town[key]) && town[key].every(object)), '小镇');
     valid(string(town.name, 64) && string(town.introduction, 2000, true) && string(town.logo, 512, true) && string(town.server, 200, true) && date(town.createdAt), '小镇资料');
+    valid(town.listed === undefined || typeof town.listed === 'boolean', '小镇展示设置');
     valid(town.password === null || object(town.password) && typeof town.password.salt === 'string' && /^[a-f0-9]{32}$/.test(town.password.salt) && typeof town.password.hash === 'string' && /^[a-f0-9]{64}$/.test(town.password.hash), '密码');
     valid(unique(town.roles, 'id') && town.roles.every(role => record(role) && string(role.name, 32) && typeof role.icon === 'string' && role.icon.length <= 128 && DIMENSION.test(role.icon) && Array.isArray(role.permissions) && new Set(role.permissions).size === role.permissions.length && role.permissions.every(permission => typeof permission === 'string' && Object.hasOwn(PERMISSIONS, permission))), '权限组');
     const roles = new Map(town.roles.map(role => [role.id, role]));
@@ -293,6 +294,7 @@ export class TownService {
     const done = (result, mutated = true) => ({ result, mutated });
     if (action === 'auth.logout') { delete state.sessions[context.sessionKey]; return done({}); }
     if (action === 'town.list') return done(Object.values(state.towns).filter(town => town.members.some(member => member.playerId === player.id)).map(town => ({ ...publicTown(town), memberCount: town.members.length, roleId: town.members.find(member => member.playerId === player.id).roleId })), false);
+    if (action === 'town.discover') return done(Object.values(state.towns).filter(town => town.listed === true).map(town => ({ id: town.id, name: town.name, introduction: town.introduction, logo: town.logo, server: town.server, memberCount: town.members.length, passwordEnabled: Boolean(town.password) })), false);
     if (action === 'town.create') {
       check(Object.keys(state.towns).length < config.maximumTowns, 'conflict', '服务小镇数量已达上限');
       let id;
@@ -301,7 +303,7 @@ export class TownService {
       delete initialWorld.worldId;
       state.towns[id] = {
         id, name: text(payload.name, '小镇名称', 64), introduction: text(payload.introduction, '介绍', 2000, true),
-        logo: text(payload.logo, '标志', 512, true), server: text(payload.server, '服务器', 200, true),
+        logo: text(payload.logo, '标志', 512, true), server: text(payload.server, '服务器', 200, true), listed: false,
         ownerId: player.id, currentWorldId: initialWorld.id, password: await hashPassword(payload.password), createdAt: timestamp,
         roles: [
           { id: 'newcomer', icon: 'minecraft:dirt', name: '新人', permissions: [] },
@@ -399,6 +401,10 @@ export class TownService {
     }
     if (action === 'town.update') {
       requirePermission('town.manage');
+      if ('listed' in payload) {
+        check(typeof payload.listed === 'boolean', 'invalid_argument', '展示设置必须为开启或关闭');
+        town.listed = payload.listed;
+      }
       for (const [key, maximum] of [['name', 64], ['introduction', 2000], ['logo', 512], ['server', 200]]) if (key in payload) town[key] = text(payload[key], key, maximum, key !== 'name');
       if ('password' in payload) town.password = await hashPassword(payload.password);
       return done(publicTown(town));
@@ -514,6 +520,12 @@ export class TownService {
       Object.assign(project, fields, { updatedAt: timestamp });
       return done(project);
     }
+    if (action === 'project.delete') {
+      const project = projectWritable(payload.id); manageProject(project);
+      town.tickets = town.tickets.filter(ticket => ticket.projectId !== project.id);
+      town.projects = town.projects.filter(item => item.id !== project.id);
+      return done({ id: project.id });
+    }
     if (action === 'project.status') {
       const project = projectWritable(payload.id); manageProject(project);
       const status = choice(payload.status, ['active', 'completed'], '工程状态');
@@ -529,7 +541,9 @@ export class TownService {
       check(['completed', 'maintenance'].includes(project.status), 'conflict', '只有已完工工程可以报修');
       const location = position(payload);
       check(location.dimension === project.dimension, 'invalid_argument', '报修位置与工程维度不一致');
-      const ticket = { ...base(project.worldId), ...location, projectId: project.id, title: text(payload.title, '维修事项', 100), description: text(payload.description, '故障说明', 2000, true), status: 'open', resolution: '' };
+      const description = text(payload.description, '内容说明', 2000, payload.title !== undefined);
+      const title = payload.title === undefined ? Array.from(description.replace(/\s+/g, ' ')).slice(0, 50).join('') : text(payload.title, '维修事项', 100);
+      const ticket = { ...base(project.worldId), ...location, projectId: project.id, title, description, status: 'open', resolution: '' };
       town.tickets.push(ticket); project.status = 'maintenance'; project.updatedAt = timestamp;
       return done(ticket);
     }

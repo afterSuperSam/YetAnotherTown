@@ -61,6 +61,9 @@ final class TownForm extends Screen {
     private boolean submitting;
     private boolean discardConfirmation;
     private boolean breadcrumbTitle;
+    private boolean guardActions;
+    private String titleIcon;
+    private int titleColor = TownStyle.FRAME_TEXT;
     private int returningFocusIndex = -1;
     private AbstractWidget pendingFocus;
     private record TextLine(String value, int x, int y, int color) { }
@@ -73,8 +76,8 @@ final class TownForm extends Screen {
         super(Component.literal(title));
         this.parent = parent;
         this.fields = fields;
-        this.description = description;
-        this.actions = actions;
+        this.description = new ArrayList<>(description);
+        this.actions = new ArrayList<>(actions);
         this.submit = submit;
         this.initialStatus = TownGateway.get().status;
         this.context = TownGateway.get().context();
@@ -82,6 +85,27 @@ final class TownForm extends Screen {
     }
 
     TownForm withBreadcrumbTitle() { breadcrumbTitle = true; return this; }
+    TownForm withGuardedActions() { guardActions = true; return this; }
+    TownForm withProjectTitle(JsonObject project) {
+        titleIcon = ProjectHighlighter.projectIcon(TownScreen.stringValue(project, "type"));
+        titleColor = TownScreen.projectColor(project);
+        return this;
+    }
+
+    private void runAction(Action action) {
+        if (submitting || !validContext()) return;
+        if (guardActions && fields.stream().anyMatch(field -> !field.initial().equals(values.get(field.key())))) {
+            error = "请先保存或取消修改";
+            return;
+        }
+        action.run().run();
+    }
+
+    void updateContent(List<String> description, List<Action> actions) {
+        this.description.clear(); this.description.addAll(description);
+        this.actions.clear(); this.actions.addAll(actions);
+        rebuild();
+    }
 
     @Override public void tick() {
         liveActions.forEach((button, action) -> {
@@ -137,12 +161,12 @@ final class TownForm extends Screen {
             int halfWidth = (contentWidth - 8) / 2;
             boolean pair = index + 1 < actions.size() && font.width(action.label()) <= halfWidth - 12 && font.width(actions.get(index + 1).label()) <= halfWidth - 12;
             int actionWidth = pair ? halfWidth : contentWidth;
-            Button actionButton = TownStyle.button(action.label(), contentLeft, y, actionWidth, () -> { if (!submitting && validContext()) action.run().run(); });
+            Button actionButton = TownStyle.button(action.label(), contentLeft, y, actionWidth, () -> runAction(action));
             actionButton.active = !submitting; addContentWidget(actionButton);
             if (action.liveLabel() != null) liveActions.put(actionButton, action);
             if (pair) {
                 Action next = actions.get(index + 1);
-                Button nextButton = TownStyle.button(next.label(), contentLeft + actionWidth + 8, y, contentWidth - actionWidth - 8, () -> { if (!submitting && validContext()) next.run().run(); });
+                Button nextButton = TownStyle.button(next.label(), contentLeft + actionWidth + 8, y, contentWidth - actionWidth - 8, () -> runAction(next));
                 nextButton.active = !submitting; addContentWidget(nextButton);
                 if (next.liveLabel() != null) liveActions.put(nextButton, next);
             }
@@ -392,8 +416,11 @@ final class TownForm extends Screen {
         TownStyle.window(graphics, window, bodyTop, bodyBottom);
         String feedback = !TownGateway.get().status.equals(initialStatus) ? TownGateway.get().status : "";
         String status = submitting ? "正在提交…" : error.isBlank() ? feedback : error;
-        graphics.text(font, font.plainSubstrByWidth(TownStyle.title() + (breadcrumbTitle ? " · " + title.getString() : ""), panelWidth - 68), left + 16, window.top() + 11, TownStyle.FRAME_TEXT, false);
-        if (!breadcrumbTitle) graphics.text(font, font.plainSubstrByWidth(title.getString(), panelWidth - 32), left + 16, window.top() + 29, TownStyle.FRAME_TEXT, false);
+        TownStyle.heading(graphics, font, TownStyle.title() + (breadcrumbTitle ? " · " + title.getString() : ""), left + 16, window.top() + 10, panelWidth - 68);
+        if (!breadcrumbTitle) {
+            if (titleIcon != null) VersionClient.drawLogo(graphics, titleIcon, left + 12, window.top() + 25, 20);
+            graphics.text(font, font.plainSubstrByWidth(title.getString(), panelWidth - (titleIcon == null ? 32 : 46)), left + (titleIcon == null ? 16 : 30), window.top() + 29, titleColor, false);
+        }
         graphics.enableScissor(left + 12, bodyTop, left + panelWidth - 12, bodyBottom);
         for (int y : separators) graphics.fill(left + 16, y, left + panelWidth - 16, y + 1, TownStyle.LINE);
         for (TextLine label : labels) graphics.text(font, label.value(), label.x(), label.y(), label.color(), false);

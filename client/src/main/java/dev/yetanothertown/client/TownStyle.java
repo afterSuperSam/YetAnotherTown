@@ -40,6 +40,11 @@ final class TownStyle {
 
     private TownStyle() {}
 
+    static void heading(GuiGraphicsExtractor graphics, Font font, String title, int x, int y, int width) {
+        icon(graphics, 0, x, y, FRAME_TEXT);
+        graphics.text(font, font.plainSubstrByWidth(title, Math.max(0, width - 13)), x + 13, y, FRAME_TEXT, false);
+    }
+
     /** 状态区只显示短反馈，悬停保留完整原因。 */
     static String compactStatus(String status) {
         String text = status.replaceAll("\\s+", " ").strip();

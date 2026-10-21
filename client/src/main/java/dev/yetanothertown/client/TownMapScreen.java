@@ -82,7 +82,7 @@ public final class TownMapScreen extends Screen {
     @Override public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
         TownStyle.background(graphics, width, height);
         TownStyle.window(graphics, window, bodyTop, bodyBottom);
-        graphics.text(font, font.plainSubstrByWidth(TownStyle.title(), window.width() - 32), window.left() + 16, window.top() + 11, TownStyle.FRAME_MUTED, false);
+        TownStyle.heading(graphics, font, TownStyle.title(), window.left() + 16, window.top() + 10, window.width() - 32);
         graphics.text(font, font.plainSubstrByWidth(title.getString(), window.width() - 32), window.left() + 16, window.top() + 29, TownStyle.FRAME_TEXT, false);
         if (showIcon) {
             int iconX = width / 2 - 17;
