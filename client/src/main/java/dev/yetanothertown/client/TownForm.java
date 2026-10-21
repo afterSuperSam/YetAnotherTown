@@ -110,7 +110,7 @@ final class TownForm extends Screen {
         panelWidth = window.width();
         left = window.left();
         bodyTop = window.top() + (breadcrumbTitle ? 32 : 48);
-        bodyBottom = window.bottom() - 57;
+        bodyBottom = window.bottom() - 37;
         int contentLeft = left + 16;
         int contentWidth = panelWidth - 32;
         int y = bodyTop + 6 - scroll;
@@ -390,7 +390,10 @@ final class TownForm extends Screen {
     public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
         TownStyle.background(graphics, width, height);
         TownStyle.window(graphics, window, bodyTop, bodyBottom);
-        graphics.text(font, font.plainSubstrByWidth(TownStyle.title() + (breadcrumbTitle ? " · " + title.getString() : ""), panelWidth - 68), left + 16, window.top() + 11, TownStyle.FRAME_MUTED, false);
+        String feedback = !TownGateway.get().status.equals(initialStatus) ? TownGateway.get().status : "";
+        String status = submitting ? "正在提交…" : error.isBlank() ? feedback : error;
+        TownStyle.heading(graphics, font, TownStyle.title() + (breadcrumbTitle ? " · " + title.getString() : ""), status,
+                left + 16, window.top() + 11, panelWidth - (submitting ? 68 : 32), error.isBlank() ? TownStyle.FRAME_MUTED : 0xFF8A3026, mouseX, mouseY);
         if (!breadcrumbTitle) graphics.text(font, font.plainSubstrByWidth(title.getString(), panelWidth - 32), left + 16, window.top() + 29, TownStyle.FRAME_TEXT, false);
         graphics.enableScissor(left + 12, bodyTop, left + panelWidth - 12, bodyBottom);
         for (int y : separators) graphics.fill(left + 16, y, left + panelWidth - 16, y + 1, TownStyle.LINE);
@@ -401,11 +404,6 @@ final class TownForm extends Screen {
         }
         graphics.disableScissor();
         super.extractRenderState(graphics, mouseX, mouseY, delta);
-        String feedback = !TownGateway.get().status.equals(initialStatus) ? TownGateway.get().status : "Tab 切换 · 滚轮 / PageUp / PageDown 浏览";
-        String footer = submitting ? "正在提交，请稍候…" : error.isBlank() ? feedback : error;
-        graphics.text(font, font.plainSubstrByWidth(footer, panelWidth - 32), left + 16, window.bottom() - 46, error.isBlank() ? TownStyle.FRAME_MUTED : 0xFF8A3026, false);
-        if (font.width(footer) > panelWidth - 32 && mouseX >= left + 16 && mouseX < window.right() - 16 && mouseY >= window.bottom() - 48 && mouseY < window.bottom() - 35)
-            graphics.setTooltipForNextFrame(Component.literal(footer), mouseX, mouseY);
         if (maximumScroll > 0) {
             int trackHeight = bodyBottom - bodyTop;
             int handleHeight = Math.max(14, trackHeight * trackHeight / (trackHeight + maximumScroll));

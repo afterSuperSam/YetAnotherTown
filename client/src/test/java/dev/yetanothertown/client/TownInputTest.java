@@ -42,7 +42,22 @@ public final class TownInputTest {
         var longTooltip = ProjectHighlighter.tooltipLayout("长工程名称".repeat(20), "PlayerName1234567", "长简介😀".repeat(200), "planned", 160, 140, 9, pixels);
         require(longTooltip.width() <= 128 && longTooltip.height() <= 108, "Wrapped hover card must fit the minimum supported viewport");
         require(longTooltip.introduction().getLast().endsWith("…"), "Truncated introductions must indicate hidden content");
-        require(ProjectHighlighter.projectIcon("machine").equals("minecraft:redstone") && ProjectHighlighter.projectIcon("building").equals("minecraft:quartz_block")
+        require(longTooltip.title().size() == 1 && longTooltip.owner().size() == 1 && longTooltip.avatarSize() == 22, "Hover header must remain two rows beside a compact avatar even with long names");
+        require(longTooltip.statusLeft() + pixels.applyAsInt("计划中") <= longTooltip.width(), "Inline status must remain inside a narrow card after title truncation");
+        require(longTooltip.introductionTop() > longTooltip.avatarSize()
+                && pixels.applyAsInt(longTooltip.introduction().getFirst()) > longTooltip.width() - longTooltip.textLeft(), "Description must use the entire card width below the avatar");
+        var emptyTooltip = ProjectHighlighter.tooltipLayout("Test", "DogSam", "", "completed", 640, 360, 9, pixels);
+        require(emptyTooltip.introduction().isEmpty() && emptyTooltip.height() == emptyTooltip.avatarSize(), "Empty description and completed status must not leave empty footer rows");
+        for (int viewport : new int[]{320, 480, 640, 960}) {
+            var window = TownStyle.mainBounds(viewport, 360);
+            require(window.left() - 43 >= 0 && window.right() <= viewport && window.width() > 200, "External tabs and the main panel must fit the viewport together");
+        }
+        require(TownStyle.compactStatus("小镇设置没有修改").equals("未作修改"), "No-change feedback must use a concise meaningful label");
+        for (String status : new String[]{"已连接当前游戏身份", "正在使用当前游戏身份连接…", "长提示😀".repeat(8), "", "没有小镇管理权限"}) {
+            String compact = TownStyle.compactStatus(status);
+            require(compact.codePointCount(0, compact.length()) <= 8 && !compact.endsWith("\uD83D…"), "Header feedback must fit eight complete Unicode characters");
+        }
+        require(ProjectHighlighter.projectIcon("machine").equals("minecraft:redstone") && ProjectHighlighter.projectIcon("building").equals("minecraft:quartz")
                 && ProjectHighlighter.projectIcon("other").equals("minecraft:crafting_table"), "Project categories must use their designated vanilla items");
         var activeWorld = TownGateway.object("id", "0123456789abcdef01234567", "archived", false);
         require(XaeroBridge.associationBlockReason(activeWorld, true, "minecraft:overworld", "minecraft:overworld", "town", "town").isEmpty(), "A loaded current map must allow one-step association without an existing binding");

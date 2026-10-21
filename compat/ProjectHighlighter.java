@@ -41,10 +41,8 @@ final class ProjectHighlighter extends ChunkHighlighter {
     }
     private record Overlay(MapWorld world, HighlighterRegistry registry, JsonObject snapshot, TownGateway.Context context, String worldId, boolean enabled,
                            Map<String, String> bindings, Map<String, String> viewedMaps, List<Area> areas) { }
-    static final int AVATAR_SIZE = 32;
-    static final int OWNER_TEXT_OFFSET = 38;
-    private static final int TYPE_ICON_OFFSET = 18;
-    record TooltipLayout(int width, int height, int titleHeight, int ownerTop, int introductionTop, int statusTop,
+    private static final int TYPE_ICON_OFFSET = 14;
+    record TooltipLayout(int width, int height, int avatarSize, int textLeft, int titleHeight, int ownerTop, int introductionTop, int statusLeft,
                          List<String> title, List<String> owner, List<String> introduction) { }
     private static volatile Overlay overlay;
     private final HighlighterRegistry registry;
@@ -198,41 +196,43 @@ final class ProjectHighlighter extends ChunkHighlighter {
             if (layout.height() > screen.height - 32) return;
             int[] position = tooltipPosition(screen.width, screen.height, layout.width(), layout.height(), mouseX, mouseY);
             int x = position[0], y = position[1];
-            int textX = x + OWNER_TEXT_OFFSET;
+            int textX = x + layout.textLeft();
             graphics.nextStratum();
             TooltipRenderUtil.extractTooltipBackground(graphics, x, y, layout.width(), layout.height(), null);
-            VersionClient.drawAvatar(graphics, area.leaderId, area.leaderName, x, y + 1, AVATAR_SIZE);
-            VersionClient.drawLogo(graphics, projectIcon(area.type), textX - 4, y - 4, 24);
-            for (int index = 0; index < layout.title().size(); index++) graphics.text(font, layout.title().get(index), textX + TYPE_ICON_OFFSET, y + 3 + index * step, TownStyle.ACCENT, true);
+            VersionClient.drawAvatar(graphics, area.leaderId, area.leaderName, x, y, layout.avatarSize());
+            VersionClient.drawLogo(graphics, projectIcon(area.type), textX - 4, y - 4, 20);
+            for (int index = 0; index < layout.title().size(); index++) graphics.text(font, layout.title().get(index), textX + TYPE_ICON_OFFSET, y + 1 + index * step, TownStyle.TEXT, true);
             for (int index = 0; index < layout.owner().size(); index++) graphics.text(font, layout.owner().get(index), textX, y + layout.ownerTop() + index * step, TownStyle.MUTED, false);
-            for (int index = 0; index < layout.introduction().size(); index++) graphics.text(font, layout.introduction().get(index), textX, y + layout.introductionTop() + index * step, TownStyle.TEXT, false);
-            if (!area.status.equals("completed")) graphics.text(font, state(area.status), textX, y + layout.statusTop(), TownStyle.ACCENT, false);
+            for (int index = 0; index < layout.introduction().size(); index++) graphics.text(font, layout.introduction().get(index), x, y + layout.introductionTop() + index * step, TownStyle.TEXT, false);
+            if (!area.status.equals("completed")) graphics.text(font, state(area.status), x + layout.statusLeft(), y + 1,
+                    area.status.equals("maintenance") ? TownStyle.DANGER : area.status.equals("active") ? TownStyle.SUCCESS : TownStyle.ACCENT, false);
         } catch (IllegalAccessException exception) { throw new IllegalStateException("读取 Xaero 地图悬停位置失败", exception); }
     }
 
     static String projectIcon(String type) {
-        return switch (type) { case "machine" -> "minecraft:redstone"; case "building" -> "minecraft:quartz_block"; default -> "minecraft:crafting_table"; };
+        return switch (type) { case "machine" -> "minecraft:redstone"; case "building" -> "minecraft:quartz"; default -> "minecraft:crafting_table"; };
     }
 
-    /** 头像固定靠左，右栏按实际内容收缩，并为窄屏和长简介预留折行空间。 */
+    /** 头像与两行身份信息等高，状态跟随名称，简介独占通栏。 */
     static TooltipLayout tooltipLayout(String name, String ownerName, String description, String status,
                                        int screenWidth, int screenHeight, int lineHeight, ToIntFunction<String> measure) {
         String ownerText = summary(ownerName, 80);
-        int naturalWidth = Math.max(longestLine(name, measure) + TYPE_ICON_OFFSET, Math.max(longestLine(ownerText, measure), longestLine(description, measure)));
-        if (!status.equals("completed")) naturalWidth = Math.max(naturalWidth, measure.applyAsInt(state(status)));
-        int textWidth = Math.max(1, Math.min(Math.min(210, screenWidth - 32 - OWNER_TEXT_OFFSET), Math.max(48, naturalWidth)));
         int step = lineHeight + 2;
-        List<String> title = limitedLines(name, Math.max(1, textWidth - TYPE_ICON_OFFSET), 2, measure);
-        List<String> owner = limitedLines(ownerText, textWidth, 2, measure);
-        int titleHeight = Math.max(16, title.size() * step + 3);
-        int ownerTop = titleHeight + 2;
-        int introductionTop = ownerTop + owner.size() * step + 4;
-        int statusHeight = status.equals("completed") ? 0 : step + 3;
-        int maximumLines = Math.max(1, Math.min(5, (screenHeight - 32 - introductionTop - statusHeight) / step));
-        List<String> introduction = limitedLines(description, textWidth, maximumLines, measure);
-        int statusTop = introductionTop + introduction.size() * step + 3;
-        int height = Math.max(AVATAR_SIZE + 1, introductionTop + introduction.size() * step + statusHeight);
-        return new TooltipLayout(OWNER_TEXT_OFFSET + textWidth, height, titleHeight, ownerTop, introductionTop, statusTop, title, owner, introduction);
+        int avatarSize = lineHeight * 2 + 4;
+        int textLeft = avatarSize + 6;
+        int statusWidth = status.equals("completed") ? 0 : measure.applyAsInt(state(status)) + 6;
+        int naturalWidth = Math.max(textLeft + Math.max(longestLine(name, measure) + TYPE_ICON_OFFSET + statusWidth, longestLine(ownerText, measure)), longestLine(description, measure));
+        int width = Math.max(1, Math.min(Math.min(248, screenWidth - 32), Math.max(96, naturalWidth)));
+        int textWidth = width - textLeft;
+        List<String> title = limitedLines(summary(name, 200), Math.max(1, textWidth - TYPE_ICON_OFFSET - statusWidth), 1, measure);
+        List<String> owner = limitedLines(ownerText, textWidth, 1, measure);
+        int ownerTop = step + 1;
+        int introductionTop = avatarSize + 6;
+        int maximumLines = Math.max(1, Math.min(5, (screenHeight - 32 - introductionTop) / step));
+        List<String> introduction = description.isBlank() ? List.of() : limitedLines(description, width, maximumLines, measure);
+        int statusLeft = textLeft + TYPE_ICON_OFFSET + measure.applyAsInt(title.getFirst()) + 6;
+        int height = introduction.isEmpty() ? avatarSize : introductionTop + introduction.size() * step;
+        return new TooltipLayout(width, height, avatarSize, textLeft, step, ownerTop, introductionTop, statusLeft, title, owner, introduction);
     }
 
     private static int longestLine(String text, ToIntFunction<String> measure) {

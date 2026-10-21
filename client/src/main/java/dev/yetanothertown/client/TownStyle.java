@@ -3,6 +3,7 @@ package dev.yetanothertown.client;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.resources.Identifier;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.network.chat.Component;
 
@@ -38,6 +39,35 @@ final class TownStyle {
     };
 
     private TownStyle() {}
+
+    static Window mainBounds(int screenWidth, int screenHeight) {
+        Window group = bounds(screenWidth, screenHeight, 604, 310);
+        return new Window(group.left() + 44, group.top(), group.width() - 44, group.height());
+    }
+
+    /** 标题栏只显示短反馈，悬停保留完整原因。 */
+    static String compactStatus(String status) {
+        String text = status.replaceAll("\\s+", " ").strip();
+        text = switch (text) {
+            case "小镇设置没有修改" -> "未作修改";
+            case "已连接当前游戏身份" -> "已连接";
+            case "已自动匹配小镇当前地图" -> "地图已匹配";
+            case "正在使用当前游戏身份连接…" -> "正在连接…";
+            case "进入世界后自动读取游戏身份并连接小镇服务" -> "等待进入世界";
+            default -> text;
+        };
+        return text.codePointCount(0, text.length()) <= 8 ? text : text.substring(0, text.offsetByCodePoints(0, 7)) + "…";
+    }
+
+    static void heading(GuiGraphicsExtractor graphics, Font font, String title, String status, int x, int y, int width, int statusColor, int mouseX, int mouseY) {
+        String feedback = font.plainSubstrByWidth(compactStatus(status), Math.max(0, width - 24));
+        int feedbackWidth = feedback.isEmpty() ? 0 : font.width(feedback) + 10;
+        String heading = font.plainSubstrByWidth(title, Math.max(0, width - feedbackWidth));
+        graphics.text(font, heading, x, y, FRAME_TEXT, false);
+        graphics.text(font, feedback, x + font.width(heading) + 10, y, statusColor, false);
+        if (mouseX >= x && mouseX < x + width && mouseY >= y - 3 && mouseY < y + font.lineHeight + 3)
+            graphics.setTooltipForNextFrame(Component.literal(title + (status.isBlank() ? "" : "\n" + status)), mouseX, mouseY);
+    }
 
     static Window bounds(int screenWidth, int screenHeight, int preferredWidth, int preferredHeight) {
         int horizontalMargin = screenWidth >= 480 ? Math.min(48, screenWidth / 12) : 12;
