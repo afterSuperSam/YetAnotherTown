@@ -179,18 +179,18 @@ public final class TownScreen extends Screen {
         clearWidgets(); lines.clear(); cards.clear(); panels.clear(); homeButtons.clear(); homeIcons.clear();
         previousSnapshot = gateway.snapshot; previousTowns = gateway.towns;
         previousNavigation = VersionClient.navigation();
-        window = TownStyle.mainBounds(width, height);
+        window = TownStyle.bounds(width, height, 560, 346);
         contentLeft = window.left() + 12;
         contentWidth = window.width() - 24;
-        bodyTop = window.top() + 32;
-        bodyBottom = window.bottom() - 8;
+        bodyTop = window.top() + 48;
+        bodyBottom = window.bottom() - 34;
         contentBottom = bodyBottom - 6;
         String[] tabs = {"主页", "平台", "管理"};
+        int navigationWidth = Math.min(86, (contentWidth - 8) / 3);
         for (int index = 0; index < tabs.length; index++) {
             final int selected = index;
-            Button navigation = addRenderableWidget(TownStyle.tab(tabs[index], window.left() - 43, bodyTop + 8 + index * 34, 44,
+            Button navigation = addRenderableWidget(TownStyle.tab(tabs[index], contentLeft + index * (navigationWidth + 4), window.top() + 25, navigationWidth,
                     () -> { tab = selected; section = 0; page = 0; searchInput = null; rebuild(); }, tab == index));
-            navigation.setHeight(28);
             navigation.active = index == 0 || gateway.loggedIn() && !gateway.townId.isEmpty();
         }
         button("×", window.right() - 28, window.top() + 5, 20, this::onClose);
@@ -217,8 +217,7 @@ public final class TownScreen extends Screen {
             contentTop += 26;
             management();
         }
-        int refreshWidth = contentWidth >= 360 ? 64 : 40;
-        button(contentWidth >= 360 ? "刷新资料" : "刷新", window.right() - 32 - refreshWidth, window.top() + 5, refreshWidth, () -> { gateway.refreshTowns(); gateway.refresh(); });
+        button("刷新资料", contentLeft + contentWidth - 64, window.bottom() - 26, 64, () -> { gateway.refreshTowns(); gateway.refresh(); });
         restoreFocus(focused);
         if (searchFocused && tab == 1) setInitialFocus(searchInput);
         if (focusedSetting != null && tab == 2 && section == 3 && children().contains(townInputs.get(focusedSetting)) && townInputs.get(focusedSetting).visible) setInitialFocus(townInputs.get(focusedSetting));
@@ -261,7 +260,7 @@ public final class TownScreen extends Screen {
         int heroY = wide ? y : y + profileHeight + 8;
         int archiveWidth = mainWidth;
         int homeActionWidth = (mainWidth - 30) / 2;
-        int heroHeight = 180;
+        int heroHeight = 164;
         panels.add(new Panel(x, heroY, mainWidth, heroHeight, true));
         showLogo = !gateway.townId.isEmpty();
         logoX = x + 12; logoY = heroY + 12;
@@ -270,11 +269,12 @@ public final class TownScreen extends Screen {
         label(font.plainSubstrByWidth(gateway.townId.isEmpty() ? "从这里，开始建设" : townName, archiveWidth - (titleX - x) - 10), titleX, heroY + 31, TEXT);
         if (!gateway.loggedIn()) {
             paragraph("使用当前游戏 UUID 自动连接，登记项目并参与协作。", x + 12, heroY + 70, archiveWidth - 24, MUTED);
-            button("重新连接", x + 12, heroY + 148, archiveWidth - 24, () -> VersionClient.connectIdentity(this::rebuild));
+            button("重新连接", x + 12, heroY + 132, archiveWidth - 24, () -> VersionClient.connectIdentity(this::rebuild));
         } else if (gateway.townId.isEmpty()) {
             paragraph("注册小镇，或通过八位 ID 加入伙伴。", x + 12, heroY + 70, archiveWidth - 24, MUTED);
         } else {
-            label(font.plainSubstrByWidth("ID " + gateway.townId + " · " + array("members").size() + " 位成员", archiveWidth - 24), x + 12, heroY + 66, MUTED);
+            label(font.plainSubstrByWidth("ID " + gateway.townId + " · " + array("members").size() + " 位成员 · 服务器 "
+                    + stringValue(town, "server", VersionClient.serverAddress()), archiveWidth - 24), x + 12, heroY + 66, MUTED);
             List<String> introduction = wrap(stringValue(town, "introduction", "一起规划，一起建设。"), archiveWidth - 24);
             for (int index = 0; index < Math.min(2, introduction.size()); index++) label(introduction.get(index), x + 12, heroY + 83 + index * 12, MUTED);
             int openTickets = 0;
@@ -283,10 +283,9 @@ public final class TownScreen extends Screen {
             homeIcons.add(new ItemIcon("minecraft:anvil", x + 18 + homeActionWidth, heroY + 109));
             label(font.plainSubstrByWidth(array("projects").size() + " 项目", homeActionWidth - 26), x + 36, heroY + 116, TEXT);
             label(font.plainSubstrByWidth(openTickets + " 待修", homeActionWidth - 26), x + 42 + homeActionWidth, heroY + 116, openTickets > 0 ? ACCENT : TownStyle.SUCCESS);
-            button("项目地图", x + 12, heroY + 148, homeActionWidth, this::openMap);
-            button("成员与权限", x + 18 + homeActionWidth, heroY + 148, homeActionWidth, () -> { tab = 2; section = 0; rebuild(); });
+            button("项目地图", x + 12, heroY + 132, homeActionWidth, this::openMap);
+            button("成员与权限", x + 18 + homeActionWidth, heroY + 132, homeActionWidth, () -> { tab = 2; section = 0; rebuild(); });
         }
-        label(font.plainSubstrByWidth("服务器 · " + stringValue(town, "server", VersionClient.serverAddress()), archiveWidth - 24), x + 12, heroY + 131, MUTED);
         int worldY = heroY + heroHeight + 8;
         boolean compactWorld = mainWidth >= 280;
         int worldHeight = compactWorld ? 64 : 96;
@@ -829,9 +828,7 @@ public final class TownScreen extends Screen {
         double eased = 1 - Math.pow(1 - progress, 3);
         int headingX = contentLeft + (int) ((1 - eased) * 4);
         TownStyle.icon(graphics, 0, headingX, window.top() + 11, TownStyle.FRAME_TEXT);
-        int refreshWidth = contentWidth >= 360 ? 64 : 40;
-        TownStyle.heading(graphics, font, TownStyle.title(), gateway.status, headingX + 14, window.top() + 10,
-                window.right() - 38 - refreshWidth - headingX - 14, TownStyle.FRAME_MUTED, mouseX, mouseY);
+        graphics.text(font, font.plainSubstrByWidth(TownStyle.title(), contentWidth - 50), headingX + 14, window.top() + 10, TownStyle.FRAME_TEXT, false);
         Component hoveredText = null;
         graphics.enableScissor(contentLeft, bodyTop, contentLeft + contentWidth, bodyBottom);
         for (Panel panel : panels) TownStyle.panel(graphics, panel.x(), panel.y(), panel.width(), panel.height(), panel.accented());
@@ -882,7 +879,7 @@ public final class TownScreen extends Screen {
             int thumbY = bodyTop + (trackHeight - thumbHeight) * homeScroll / maximumHomeScroll;
             graphics.fill(scrollbarX, thumbY, scrollbarX + 2, thumbY + thumbHeight, ACCENT);
         }
-        int selectedTabY = bodyTop + 8 + tab * 34;
-        graphics.fill(window.left() - 2, selectedTabY + 3, window.left() + 2, selectedTabY + 25, ACCENT);
+        TownStyle.feedback(graphics, font, gateway.status, contentLeft, window.bottom() - 26 + (20 - font.lineHeight) / 2,
+                contentWidth - 76, TownStyle.FRAME_MUTED, mouseX, mouseY);
     }
 }

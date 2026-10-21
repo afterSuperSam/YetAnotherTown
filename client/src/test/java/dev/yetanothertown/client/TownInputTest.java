@@ -49,8 +49,8 @@ public final class TownInputTest {
         var emptyTooltip = ProjectHighlighter.tooltipLayout("Test", "DogSam", "", "completed", 640, 360, 9, pixels);
         require(emptyTooltip.introduction().isEmpty() && emptyTooltip.height() == emptyTooltip.avatarSize(), "Empty description and completed status must not leave empty footer rows");
         for (int viewport : new int[]{320, 480, 640, 960}) {
-            var window = TownStyle.mainBounds(viewport, 360);
-            require(window.left() - 43 >= 0 && window.right() <= viewport && window.width() > 200, "External tabs and the main panel must fit the viewport together");
+            var window = TownStyle.bounds(viewport, 360, 560, 346);
+            require(window.left() >= 0 && window.right() <= viewport && Math.abs(window.left() - (viewport - window.right())) <= 1, "Main panel must remain centered with navigation inside the window");
         }
         require(TownStyle.compactStatus("小镇设置没有修改").equals("未作修改"), "No-change feedback must use a concise meaningful label");
         for (String status : new String[]{"已连接当前游戏身份", "正在使用当前游戏身份连接…", "长提示😀".repeat(8), "", "没有小镇管理权限"}) {
