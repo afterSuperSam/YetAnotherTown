@@ -1,6 +1,6 @@
 {
   "name": "yetanothertown",
-  "version": "1.0.0-beta",
+  "version": "1.0.0-d",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,8 @@
     "test": "node tools/build.mjs test",
     "test:client": "node tools/build.mjs client-test",
     "check:compat": "node tools/build.mjs compatibility",
-    "build": "node tools/build.mjs build"
+    "build": "node tools/build.mjs build",
+    "dev:compile": "node tools/dev.mjs"
   },
   "engines": {
     "node": ">=24"

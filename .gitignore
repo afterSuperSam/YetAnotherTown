@@ -4,8 +4,7 @@ build/
 compat/cache/
 tools/cache/
 /AGENTS.md
-/server/data/
-/server/config.json
+/server/
 node_modules/
 .env
 .env.*

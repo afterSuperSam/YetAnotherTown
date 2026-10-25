@@ -40,6 +40,8 @@ public final class TownMapScreen extends Screen {
         addRenderableWidget(TownStyle.button(TownText.text("yat.ui.back_to_town"), (width - buttonWidth) / 2, window.bottom() - 29, buttonWidth, this::onClose));
     }
 
+    @Override protected void setInitialFocus() { }
+
     @Override public void tick() {
         if (pendingOpen) open();
     }

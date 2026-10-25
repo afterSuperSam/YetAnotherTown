@@ -20,6 +20,7 @@ import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
@@ -37,8 +38,13 @@ public final class TownGateway {
     private final AtomicLong snapshots = new AtomicLong();
     private final AtomicLong townLists = new AtomicLong();
     private volatile String token = "";
+    private boolean identityLoading;
+    private boolean townListLoading;
+    private boolean snapshotLoading;
+    private boolean townsInitialized;
     private volatile boolean followCurrentWorld = true;
     private volatile JsonObject player = new JsonObject();
+    private volatile String gameServerAddress = "singleplayer";
     private volatile ClientConfig configuration = new ClientConfig();
     private Path configurationPath;
     private boolean configurationWritable = true;
@@ -52,9 +58,36 @@ public final class TownGateway {
     private TownGateway() {}
 
     public static TownGateway get() { return INSTANCE; }
-    public ClientConfig config() { return configuration; }
+    public ClientConfig config() { return runtimeConfiguration(); }
+
+    /** 热替换后的旧配置实例缺少新增字段，按已使用过的客户端恢复。 */
+    private synchronized ClientConfig runtimeConfiguration() {
+        if (configuration.completedHints == null) {
+            configuration.completedHints = new TreeSet<>();
+        }
+        return configuration;
+    }
     public JsonObject player() { return player.deepCopy(); }
     public boolean loggedIn() { return !token.isEmpty(); }
+    /** 首次资料尚未就绪时遮住中间页，已有完整快照的轮询保持可见。 */
+    public synchronized boolean isLoading() { return identityLoading || townListLoading || snapshotLoading; }
+
+    public static String normalizeServerAddress(String address) {
+        String normalized = address == null ? "" : address.strip().toLowerCase(java.util.Locale.ROOT);
+        if (normalized.endsWith(":25565") && (normalized.startsWith("[") || normalized.indexOf(':') == normalized.lastIndexOf(':')))
+            normalized = normalized.substring(0, normalized.length() - 6);
+        return normalized;
+    }
+
+    public synchronized boolean setGameServerAddress(String address) {
+        String normalized = normalizeServerAddress(address);
+        if (normalized.equals(gameServerAddress)) return false;
+        String previousToken = token;
+        gameServerAddress = normalized;
+        clearSession(TownText.text("yat.status.waiting_for_world"));
+        revoke(configuration.endpoint, previousToken, false);
+        return true;
+    }
 
     public synchronized String currentWorldId() {
         return snapshot.has("town") && snapshot.get("town").isJsonObject() ? stringValue(snapshot.getAsJsonObject("town"), "currentWorldId") : "";
@@ -71,7 +104,7 @@ public final class TownGateway {
             if (!worldId.equals(stringValue(world, "id")) || !world.has("archived") || !world.get("archived").isJsonPrimitive()
                     || !world.getAsJsonPrimitive("archived").isBoolean() || world.get("archived").getAsBoolean()) continue;
             String address = stringValue(world, "serverAddress").strip();
-            if (address.isEmpty() || !address.equalsIgnoreCase(serverAddress.strip())) return false;
+            if (address.isEmpty() || !normalizeServerAddress(address).equals(normalizeServerAddress(serverAddress))) return false;
             String expected = world.has("mapNames") && world.get("mapNames").isJsonObject() ? stringValue(world.getAsJsonObject("mapNames"), dimension) : "";
             if (expected.isBlank()) expected = stringValue(world, "mapName");
             return !expected.isBlank() && expected.equals(mapName);
@@ -118,11 +151,18 @@ public final class TownGateway {
             if (!Files.notExists(configurationPath)) {
                 JsonObject parsed = JSON.fromJson(Files.readString(configurationPath), JsonObject.class);
                 if (parsed == null) throw new IllegalArgumentException(TownText.text("yat.error.empty_client_config"));
-                Set<String> allowed = Set.of("endpoint", "entrySubtitleSeconds", "entryCooldownSeconds", "projectOverlayEnabled", "pollIntervalSeconds", "animationEnabled", "mapBindings");
+                Set<String> allowed = Set.of("endpoint", "entrySubtitleSeconds", "entryCooldownSeconds", "projectOverlayEnabled", "pollIntervalSeconds", "projectKeyHoldMillis", "animationEnabled", "mapBindings", "favoriteProjects", "lastSelectedTowns", "serviceSelected", "completedHints");
                 for (String key : parsed.keySet()) if (!allowed.contains(key)) throw new IllegalArgumentException(TownText.text("yat.error.unknown_client_setting") + key);
                 for (String key : parsed.keySet()) {
                     JsonElement value = parsed.get(key);
-                    if (key.equals("mapBindings")) {
+                    if (key.equals("favoriteProjects") || key.equals("completedHints")) {
+                        if (!value.isJsonArray()) throw new IllegalArgumentException(TownText.text(key.equals("completedHints") ? "yat.error.client_setting_type" : "yat.error.invalid_favorites") + (key.equals("completedHints") ? key : ""));
+                        for (JsonElement favorite : value.getAsJsonArray())
+                            if (!favorite.isJsonPrimitive() || !favorite.getAsJsonPrimitive().isString())
+                                throw new IllegalArgumentException(TownText.text(key.equals("completedHints") ? "yat.error.client_setting_type" : "yat.error.invalid_favorites") + (key.equals("completedHints") ? key : ""));
+                        continue;
+                    }
+                    if (key.equals("mapBindings") || key.equals("lastSelectedTowns")) {
                         if (!value.isJsonObject()) throw new IllegalArgumentException(TownText.text("yat.error.map_bindings_object"));
                         for (var binding : value.getAsJsonObject().entrySet())
                             if (!binding.getValue().isJsonPrimitive() || !binding.getValue().getAsJsonPrimitive().isString())
@@ -134,7 +174,7 @@ public final class TownGateway {
                         var primitive = value.getAsJsonPrimitive();
                         valid = switch (key) {
                             case "endpoint" -> primitive.isString();
-                            case "animationEnabled", "projectOverlayEnabled" -> primitive.isBoolean();
+                            case "animationEnabled", "projectOverlayEnabled", "serviceSelected" -> primitive.isBoolean();
                             default -> primitive.isNumber() && primitive.getAsBigDecimal().stripTrailingZeros().scale() <= 0;
                         };
                     }
@@ -177,6 +217,7 @@ public final class TownGateway {
     }
 
     public synchronized void configure(String endpoint, int entrySubtitleSeconds, int entryCooldownSeconds, int pollIntervalSeconds, boolean animationEnabled, boolean projectOverlayEnabled) {
+        runtimeConfiguration();
         ClientConfig replacement = JSON.fromJson(JSON.toJson(configuration), ClientConfig.class);
         replacement.endpoint = endpoint.strip().replaceAll("/+$", "");
         replacement.entrySubtitleSeconds = entrySubtitleSeconds;
@@ -200,9 +241,51 @@ public final class TownGateway {
         } else status = TownText.text("yat.status.client_config_saved");
     }
 
+    public boolean hasCompletedHint(String hint) { return runtimeConfiguration().completedHints.contains(hint); }
+    public synchronized void completeHint(String hint) {
+        if (!Set.of("map_selection", "navigation", "favorite").contains(hint)) throw new IllegalArgumentException(TownText.text("yat.error.client_setting_type") + "completedHints");
+        if (hasCompletedHint(hint)) return;
+        ClientConfig previous = configuration;
+        ClientConfig replacement = JSON.fromJson(JSON.toJson(configuration), ClientConfig.class);
+        replacement.completedHints.add(hint);
+        configuration = replacement;
+        try { save(); }
+        catch (IOException exception) { configuration = previous; throw new IllegalStateException(TownText.text("yat.error.save_client_config"), exception); }
+    }
+
     public synchronized void setProjectOverlayEnabled(boolean enabled) {
         if (configuration.projectOverlayEnabled == enabled) return;
         configure(configuration.endpoint, configuration.entrySubtitleSeconds, configuration.entryCooldownSeconds, configuration.pollIntervalSeconds, configuration.animationEnabled, enabled);
+    }
+
+    /** 收藏只保存在本机，按服务、小镇和项目隔离。 */
+    public boolean isFavorite(JsonObject project) {
+        return configuration.favoriteProjects.contains(configuration.endpoint + "#" + townId + "/" + stringValue(project, "id"));
+    }
+
+    public synchronized void toggleFavorite(JsonObject project) {
+        String id = stringValue(project, "id");
+        if (!townId.matches("\\d{8}") || !id.matches("[a-f0-9]{24}"))
+            throw new IllegalArgumentException(TownText.text("yat.error.invalid_favorites"));
+        ClientConfig replacement = JSON.fromJson(JSON.toJson(configuration), ClientConfig.class);
+        String key = configuration.endpoint + "#" + townId + "/" + id;
+        if (!replacement.favoriteProjects.remove(key)) replacement.favoriteProjects.add(key);
+        replacement.validate();
+        ClientConfig previous = configuration;
+        configuration = replacement;
+        try { save(); }
+        catch (IOException exception) { configuration = previous; throw new IllegalStateException(TownText.text("yat.error.save_client_config"), exception); }
+    }
+
+    public boolean matchesProjectFilter(JsonObject project, String quick, String type) {
+        if (!type.equals("all") && !type.equals(stringValue(project, "type"))) return false;
+        return switch (quick) {
+            case "all" -> true;
+            case "favorites" -> isFavorite(project);
+            case "mine" -> !stringValue(player, "id").isBlank() && stringValue(player, "id").equals(stringValue(project, "leaderId"));
+            case "maintenance" -> stringValue(project, "status").equals("maintenance");
+            default -> false;
+        };
     }
 
     public String getBoundMapKey(String dimension) {
@@ -276,6 +359,7 @@ public final class TownGateway {
 
     public synchronized CompletableFuture<JsonObject> login(String playerId, String name) {
         long attempt = authentication.incrementAndGet();
+        identityLoading = true;
         String endpoint = configuration.endpoint;
         status = TownText.text("yat.status.connecting_identity");
         return request("auth.login", object("playerId", playerId, "name", name)).thenCompose(result -> {
@@ -286,8 +370,35 @@ public final class TownGateway {
                 player = result.getAsJsonObject("player");
                 status = TownText.text("yat.status.identity_connected");
             }
-            return refreshTowns().thenApply(ignored -> { requireAttempt(attempt); return result; });
-        }).exceptionallyCompose(exception -> failed(exception, TownText.text("yat.error.connect_identity"), attempt));
+            return refreshTowns().thenCompose(ignored -> {
+                synchronized (this) {
+                    requireAttempt(attempt);
+                    String preferred = configuration.lastSelectedTowns.getOrDefault(configuration.endpoint + "#" + gameServerAddress, "");
+                    String selected = "";
+                    for (JsonElement element : towns) {
+                        String id = stringValue(element.getAsJsonObject(), "id");
+                        if (!id.matches("\\d{8}")) continue;
+                        if (selected.isEmpty() || id.equals(preferred)) selected = id;
+                    }
+                    selectTown(selected);
+                    return CompletableFuture.completedFuture(result);
+                }
+            });
+        }).exceptionallyCompose(exception -> {
+            synchronized (this) {
+                CompletableFuture<JsonObject> failure = failed(exception, TownText.text("yat.error.connect_identity"), attempt);
+                if (authentication.get() == attempt) {
+                    String incompleteToken = token;
+                    clearSession(status);
+                    revoke(endpoint, incompleteToken, false);
+                }
+                return failure;
+            }
+        }).whenComplete((result, failure) -> {
+            synchronized (this) {
+                if (authentication.get() == attempt) identityLoading = false;
+            }
+        });
     }
 
     public synchronized void logout() {
@@ -299,6 +410,10 @@ public final class TownGateway {
 
     private synchronized void clearSession(String message) {
         authentication.incrementAndGet();
+        identityLoading = false;
+        townListLoading = false;
+        snapshotLoading = false;
+        townsInitialized = false;
         token = "";
         player = new JsonObject();
         towns = new JsonArray();
@@ -330,13 +445,22 @@ public final class TownGateway {
     }
 
     public synchronized CompletableFuture<JsonObject> request(String action, JsonObject payload) {
+        if ((action.equals("town.create") || action.equals("town.update")) && payload.has("name")
+                && stringValue(payload, "name").strip().codePoints().map(character -> character <= 127 ? 1 : 2).sum() > 12) {
+            status = TownText.text("yat.error.town_name_length");
+            return CompletableFuture.failedFuture(new ServiceException(status));
+        }
         String endpoint = configuration.endpoint;
+        String serverAddress = gameServerAddress;
+        JsonObject scopedPayload = payload.deepCopy();
+        scopedPayload.addProperty("serverAddress", serverAddress);
+        if (action.equals("town.create")) scopedPayload.addProperty("server", serverAddress);
         String bearer = token;
         long revision = authentication.get();
         long selectedRevision = selection.get();
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(endpoint + "/api"))
                 .timeout(Duration.ofSeconds(20)).header("Content-Type", "application/json; charset=utf-8")
-                .POST(HttpRequest.BodyPublishers.ofString(JSON.toJson(object("action", action, "payload", payload))));
+                .POST(HttpRequest.BodyPublishers.ofString(JSON.toJson(object("action", action, "payload", scopedPayload))));
         if (!bearer.isEmpty()) builder.header("Authorization", "Bearer " + bearer);
         return http.sendAsync(builder.build(), limitedResponseBody()).thenApply(response -> {
             JsonObject envelope;
@@ -360,7 +484,15 @@ public final class TownGateway {
                 throw new CompletionException(new ServiceException(TownText.text("yat.error.http_status", response.statusCode())));
             JsonElement data = envelope.get("data");
             if (data != null && data.isJsonObject()) return data.getAsJsonObject();
-            if (data != null && data.isJsonArray()) return object("items", data);
+            if (data != null && data.isJsonArray()) {
+                if (action.equals("town.list") || action.equals("town.discover")) {
+                    JsonArray matching = new JsonArray();
+                    for (JsonElement element : data.getAsJsonArray())
+                        if (element.isJsonObject() && normalizeServerAddress(stringValue(element.getAsJsonObject(), "server")).equals(serverAddress)) matching.add(element);
+                    return object("items", matching);
+                }
+                return object("items", data);
+            }
             throw new CompletionException(new ServiceException(TownText.text("yat.error.protocol_mismatch")));
         }).exceptionallyCompose(exception -> failed(exception, TownText.text("yat.error.connect_service"), revision, selectedRevision));
     }
@@ -400,11 +532,20 @@ public final class TownGateway {
     public synchronized CompletableFuture<JsonObject> refreshTowns() {
         long revision = authentication.get();
         long requestRevision = townLists.incrementAndGet();
+        townListLoading = !townsInitialized;
         return request("town.list", object()).thenApply(result -> {
             synchronized (this) {
-                if (authentication.get() == revision && townLists.get() == requestRevision && result.has("items")) towns = result.getAsJsonArray("items");
+                if (authentication.get() == revision && townLists.get() == requestRevision && result.has("items")) {
+                    JsonArray receivedTowns = result.getAsJsonArray("items");
+                    if (!towns.equals(receivedTowns)) towns = receivedTowns;
+                    townsInitialized = true;
+                }
             }
             return result;
+        }).whenComplete((result, failure) -> {
+            synchronized (this) {
+                if (authentication.get() == revision && townLists.get() == requestRevision) townListLoading = false;
+            }
         });
     }
 
@@ -413,6 +554,7 @@ public final class TownGateway {
         String selectedWorld = worldId;
         long revision = selection.get();
         long requestRevision = snapshots.incrementAndGet();
+        snapshotLoading = !selectedTown.isEmpty() && snapshot.isEmpty();
         if (selectedTown.isEmpty()) return CompletableFuture.completedFuture(snapshot);
         return request("town.snapshot", object("townId", selectedTown, "worldId", selectedWorld)).thenCompose(result -> {
             synchronized (this) {
@@ -436,13 +578,26 @@ public final class TownGateway {
                     return refresh();
                 }
                 if (!snapshot.isEmpty() && !sharedMapIdentity(snapshot, selectedWorld).equals(sharedMapIdentity(result, selectedWorld))) selection.incrementAndGet();
-                snapshot = result;
+                if (!snapshot.equals(result)) snapshot = result;
                 return CompletableFuture.completedFuture(result);
+            }
+        }).whenComplete((result, failure) -> {
+            synchronized (this) {
+                if (snapshots.get() == requestRevision) snapshotLoading = false;
             }
         });
     }
 
     public synchronized void selectTown(String id) {
+        if (id.matches("\\d{8}") && !gameServerAddress.isEmpty()) {
+            String key = configuration.endpoint + "#" + gameServerAddress;
+            String previous = configuration.lastSelectedTowns.put(key, id);
+            try { save(); }
+            catch (IOException | IllegalArgumentException exception) {
+                if (previous == null) configuration.lastSelectedTowns.remove(key); else configuration.lastSelectedTowns.put(key, previous);
+                LOGGER.log(System.Logger.Level.WARNING, "Failed to remember selected town", exception);
+            }
+        }
         selection.incrementAndGet();
         townId = id;
         worldId = "";
@@ -488,15 +643,24 @@ public final class TownGateway {
     }
 
     public static final class ClientConfig {
-        public String endpoint = "http://127.0.0.1:37841";
+        public static final String LOCAL_ENDPOINT = "http://127.0.0.1:37841";
+        public static final String PUBLIC_ENDPOINT = "https://server.moesam.com";
+        public static final String DEFAULT_ENDPOINT = PUBLIC_ENDPOINT;
+        public static final int DEFAULT_PROJECT_KEY_HOLD_MILLIS = 600;
+        public String endpoint = DEFAULT_ENDPOINT;
+        public Set<String> completedHints = new TreeSet<>();
         public int entrySubtitleSeconds = 3;
         public int entryCooldownSeconds = 8;
         public int pollIntervalSeconds = 10;
+        public int projectKeyHoldMillis = DEFAULT_PROJECT_KEY_HOLD_MILLIS;
         public boolean animationEnabled = true;
         public boolean projectOverlayEnabled = true;
         public Map<String, String> mapBindings = new TreeMap<>();
+        public Set<String> favoriteProjects = new TreeSet<>();
+        public Map<String, String> lastSelectedTowns = new TreeMap<>();
 
         public void validate() {
+            if (completedHints == null || !Set.of("map_selection", "navigation", "favorite").containsAll(completedHints)) throw new IllegalArgumentException(TownText.text("yat.error.client_setting_type") + "completedHints");
             URI address;
             try { address = URI.create(endpoint); }
             catch (RuntimeException exception) { throw new IllegalArgumentException(TownText.text("yat.error.invalid_service_address")); }
@@ -510,7 +674,13 @@ public final class TownGateway {
             if (entrySubtitleSeconds < 0 || entrySubtitleSeconds > 10) throw new IllegalArgumentException(TownText.text("yat.error.entry_subtitle_duration"));
             if (entryCooldownSeconds < 1 || entryCooldownSeconds > 120) throw new IllegalArgumentException(TownText.text("yat.error.entry_hint_interval"));
             if (pollIntervalSeconds < 2 || pollIntervalSeconds > 300) throw new IllegalArgumentException(TownText.text("yat.error.refresh_interval"));
+            if (projectKeyHoldMillis < 200 || projectKeyHoldMillis > 3000) throw new IllegalArgumentException(TownText.text("yat.error.project_key_hold_duration"));
             if (mapBindings == null || mapBindings.size() > 10000) throw new IllegalArgumentException(TownText.text("yat.error.map_binding_limit"));
+            if (lastSelectedTowns == null || lastSelectedTowns.size() > 10000 || lastSelectedTowns.entrySet().stream().anyMatch(entry ->
+                    !entry.getKey().matches("https?://[^#]{1,2048}#[^#\\s]{1,200}") || entry.getValue() == null || !entry.getValue().matches("\\d{8}")))
+                throw new IllegalArgumentException(TownText.text("yat.error.invalid_selected_towns"));
+            if (favoriteProjects == null || favoriteProjects.size() > 10000 || favoriteProjects.stream().anyMatch(key -> key == null || !key.matches("https?://[^#]{1,2048}#\\d{8}/[a-f0-9]{24}")))
+                throw new IllegalArgumentException(TownText.text("yat.error.invalid_favorites"));
             for (var binding : mapBindings.entrySet()) {
                 if (!binding.getKey().matches("https?://[^#]{1,2048}#\\d{8}/[a-f0-9]{24}/[a-z0-9_.-]+:[a-z0-9_/.-]{1,128}")
                         || binding.getValue() == null || binding.getValue().length() > 512 || binding.getValue().indexOf('|') <= 0)

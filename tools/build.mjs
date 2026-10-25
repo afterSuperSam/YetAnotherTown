@@ -3,10 +3,11 @@ import { access, cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/pro
 import path from 'node:path';
 import { prepare, root, versions } from './dependencies.mjs';
 
-const build = path.join(root, 'build');
 const sourceRoot = path.join(root, 'client', 'src', 'main', 'java');
 const mode = process.argv[2] ?? 'build';
 if (!['check', 'test', 'client-test', 'build', 'compatibility'].includes(mode)) throw new Error('Usage: node tools/build.mjs check|test|client-test|build|compatibility');
+const packaging = mode === 'build' || mode === 'compatibility';
+const build = path.join(root, 'build', ...(packaging ? [] : [mode === 'check' ? 'check' : 'test']));
 function run(command, arguments_, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, arguments_, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], ...options });
@@ -50,7 +51,7 @@ async function nestedJars(archive) {
   if (nestedCache.has(archive)) return nestedCache.get(archive);
   const listed = await run(jar, ['tf', archive]);
   const entries = listed.split(/\r?\n/).filter(name => name.startsWith('META-INF/jars/') && name.endsWith('.jar'));
-  if (!entries.length) return [];
+  if (!entries.length) { nestedCache.set(archive, []); return []; }
   const destination = path.join(root, '.cache', 'dependencies', 'nested', path.basename(archive, '.jar'));
   await mkdir(destination, { recursive: true });
   await run(jar, ['xf', archive, ...entries], { cwd: destination });
@@ -106,7 +107,7 @@ for (const version of versions) {
     generatedFiles.push(destination);
   }
   const mods = Object.values(descriptor.mods).map(value => value.jar);
-  const nested = [];
+  const nested = [...await nestedJars(dependencies.loader)];
   for (const mod of mods) nested.push(...await nestedJars(mod));
   const classpath = [descriptor.client, dependencies.loader, dependencies.mixinCompile, ...descriptor.classpath, ...mods, ...nested];
   classpaths[version] = classpath;
@@ -120,34 +121,81 @@ for (const version of versions) {
 const bootstrap = await files(path.join(root, 'bootstrap', 'src', 'main', 'java'));
 await run(javac, ['--release', '25', '-encoding', 'UTF-8', '-proc:none', '-cp', classpaths[versions[0]].join(path.delimiter), '-d', classes, ...bootstrap]);
 await cp(path.join(root, 'client', 'src', 'main', 'resources'), classes, { recursive: true });
+if (mode === 'check') {
+  console.log(`Source check passed: ${versions.join(', ')}; release JAR unchanged`);
+} else {
 const metadata = JSON.parse(await readFile(path.join(classes, 'fabric.mod.json'), 'utf8'));
-const artifactVersion = metadata.version.replace(/-alpha\.(\d+)$/, 'alpha$1').replace(/-beta$/, 'beta');
+const artifactVersion = metadata.version.replace(/-alpha\.(\d+)$/, 'alpha$1').replace(/-beta$/, 'beta').replace(/-c\.(\d+)$/, 'c$1').replace(/-d$/, 'd');
 const artifact = path.join(build, 'libs', `yetanothertown-${artifactVersion}.jar`);
+if (packaging) {
 await mkdir(path.dirname(artifact), { recursive: true });
 await run(jar, ['--create', '--file', artifact, '--date=2026-10-18T00:00:00Z', '-C', classes, '.']);
+}
 const verifier = path.join(build, 'verifier');
 await mkdir(verifier, { recursive: true });
-await run(javac, ['--release', '25', '-encoding', 'UTF-8', '-d', verifier, path.join(root, 'tools', 'VerifyLinks.java')]);
+await run(javac, ['--release', '25', '-encoding', 'UTF-8', '-cp', classpaths[versions[0]].join(path.delimiter), '-d', verifier, path.join(root, 'tools', 'VerifyLinks.java')]);
+const verifierClasspath = [verifier, dependencies.loader, ...dependencies[versions[0]].classpath.filter(file => /^gson-\d.*\.jar$/.test(path.basename(file)))].join(path.delimiter);
 for (const version of versions) {
-  console.log(await run(java, ['-cp', verifier, 'VerifyLinks', artifact, 'dev.yetanothertown.v' + version.replaceAll('.', ''), path.join(build, `classpath-${version}.txt`)]));
+  console.log(await run(java, ['-cp', verifierClasspath, 'VerifyLinks', packaging ? artifact : classes, 'dev.yetanothertown.v' + version.replaceAll('.', ''), path.join(build, `classpath-${version}.txt`)]));
 }
 if (mode === 'compatibility') {
   for (const version of versions) {
     const descriptor = dependencies[version];
     const options = slug => [descriptor.mods[slug], ...(descriptor.alternatives[slug] ?? [])];
     const matrices = [];
+    const coverageByFile = new Map();
     for (const loader of dependencies.loaders) for (const api of options('fabric-api')) for (const world of options('xaeros-world-map')) for (const minimap of options('xaeros-minimap')) {
       const mods = [api, world, minimap, descriptor.mods.modmenu];
-      const nested = [];
+      const nested = [...await nestedJars(loader.jar)];
       for (const mod of mods) nested.push(...await nestedJars(mod.jar));
       const classpath = [descriptor.client, loader.jar, dependencies.mixinCompile, ...descriptor.classpath, ...mods.map(mod => mod.jar), ...nested];
       const name = `${version}-loader${loader.version}-api${api.version.split('+')[0]}-world${world.version.split('-').at(-1)}-mini${minimap.version.split('-').at(-1)}`;
       const file = path.join(build, `compatibility-${name}.txt`);
       await writeFile(file, classpath.join('\n') + '\n');
       matrices.push(file);
+      coverageByFile.set(file, { loader: loader.version, api: api.version, world: world.version, minimap: minimap.version });
     }
-    await run(java, ['-Xmx768m', '-cp', verifier, 'VerifyLinks', artifact, 'dev.yetanothertown.v' + version.replaceAll('.', ''), ...matrices]);
-    console.log(`${version}: ${matrices.length} dependency combinations verified (bytecode and reflection; no game launched)`);
+    const compatible = [];
+    const excluded = [];
+    for (let index = 0; index < matrices.length; index += 50) {
+      const report = await run(java, ['-Xmx768m', '-cp', verifierClasspath, 'VerifyLinks', '--metadata-only', artifact, 'dev.yetanothertown.v' + version.replaceAll('.', ''), ...matrices.slice(index, index + 50)]);
+      for (const line of report.split(/\r?\n/)) {
+        const [status, file, reason] = line.split('\t');
+        if (status === 'COMPATIBLE') compatible.push(file);
+        else if (status === 'INCOMPATIBLE') excluded.push({ file: path.basename(file), reason });
+        else throw new Error(`Invalid Fabric metadata report: ${line}`);
+      }
+    }
+    if (!compatible.length || compatible.length + excluded.length !== matrices.length) throw new Error(`Incomplete Fabric metadata matrix: ${version}`);
+    const representativeApi = descriptor.mods['fabric-api'].version;
+    const pairKey = file => {
+      const value = coverageByFile.get(file);
+      return `${value.loader}|${value.world}|${value.minimap}`;
+    };
+    const interfaces = new Set(compatible.filter(file => coverageByFile.get(file).api === representativeApi));
+    const pairs = new Set([...interfaces].map(pairKey));
+    for (const file of compatible) if (!pairs.has(pairKey(file))) {
+      interfaces.add(file);
+      pairs.add(pairKey(file));
+    }
+    for (const api of options('fabric-api')) {
+      if ([...interfaces].some(file => coverageByFile.get(file).api === api.version)) continue;
+      const candidates = compatible.filter(file => coverageByFile.get(file).api === api.version);
+      const preferred = candidates.find(file => coverageByFile.get(file).world === descriptor.mods['xaeros-world-map'].version
+        && coverageByFile.get(file).minimap === descriptor.mods['xaeros-minimap'].version);
+      if (preferred ?? candidates[0]) interfaces.add(preferred ?? candidates[0]);
+    }
+    const checks = [...interfaces];
+    const covered = new Set(checks.flatMap(file => Object.values(coverageByFile.get(file))));
+    for (const option of [...dependencies.loaders, ...options('fabric-api'), ...options('xaeros-world-map'), ...options('xaeros-minimap')])
+      if (!covered.has(option.version)) throw new Error(`Locked dependency has no compatible combination: ${version}: ${option.version}`);
+    await writeFile(path.join(build, `compatibility-excluded-${version}.json`), JSON.stringify(excluded, null, 2) + '\n');
+    for (let index = 0; index < checks.length; index += 50)
+      await run(java, ['-Xmx768m', '-cp', verifierClasspath, 'VerifyLinks', artifact, 'dev.yetanothertown.v' + version.replaceAll('.', ''), ...checks.slice(index, index + 50)]);
+    await writeFile(path.join(build, `compatibility-coverage-${version}.json`), JSON.stringify({ candidates: matrices.length, metadataCompatible: compatible.length,
+      excluded: excluded.length, interfaceChecks: checks.length, xaeroPairs: pairs.size, representativeApi,
+      checked: checks.map(file => coverageByFile.get(file)) }, null, 2) + '\n');
+    console.log(`${version}: ${matrices.length} metadata candidates; ${compatible.length} compatible, ${excluded.length} declared conflicts; ${checks.length} interface checks cover all ${pairs.size} Xaero pairs and ${options('fabric-api').length} Fabric API versions (primary API ${representativeApi}; no game launched)`);
   }
 }
 if (mode === 'test' || mode === 'client-test' || mode === 'compatibility') {
@@ -172,4 +220,5 @@ if (mode === 'test' || mode === 'client-test' || mode === 'compatibility') {
     console.log(version + ': ' + await run(java, ['-ea', '-cp', testClasses + path.delimiter + versionClasspath, `dev.yetanothertown.${variant}.TownInputTest`]));
   }
 }
-console.log(`Single JAR: ${path.relative(root, artifact)} (${versions.join(', ')})`);
+console.log(packaging ? `Single JAR: ${path.relative(root, artifact)} (${versions.join(', ')})` : `Tests passed: ${versions.join(', ')}; release JAR unchanged`);
+}

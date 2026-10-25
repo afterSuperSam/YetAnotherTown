@@ -29,12 +29,15 @@ public final class VersionClient {
     private static final KeyMapping.Category KEY_CATEGORY = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("yetanothertown", "general"));
     private static KeyMapping openKey;
     private static KeyMapping projectKey;
+    private static ProjectKeyPress projectKeyPress;
+    private static TownGateway.Context projectKeyContext;
     private static long nextRefresh;
     private static boolean refreshing;
     private static boolean connectingIdentity;
     private static long nextIdentityAttempt;
     private static long nextMapBindingAttempt;
     private static String observedIdentity = "";
+    private static long identityAttempt;
     private static Method screenSetter;
     private static Method screenGetter;
     private static Field screenField;
@@ -49,6 +52,7 @@ public final class VersionClient {
     private static Method hiddenGetter;
     private static Field hiddenField;
     private static Object hiddenOwner;
+
 
     private VersionClient() { }
 
@@ -67,11 +71,18 @@ public final class VersionClient {
         });
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             long now = System.nanoTime();
-            String identity = client.player == null ? "" : playerId() + ":" + playerName();
-            if (!observedIdentity.equals(identity)) {
-                gateway.logout();
+            String identity = client.getConnection() == null ? "" : playerId() + ":" + playerName();
+            boolean serverChanged = gateway.setGameServerAddress(identity.isEmpty() ? "" : serverAddress());
+            if (serverChanged || !observedIdentity.equals(identity)) {
+                if (!serverChanged) gateway.logout();
+                clearNavigation();
                 observedIdentity = identity;
+                identityAttempt++;
+                connectingIdentity = false;
+                refreshing = false;
                 nextIdentityAttempt = 0;
+                nextRefresh = 0;
+                nextMapBindingAttempt = 0;
             }
             if (!identity.isEmpty() && !gateway.loggedIn() && !connectingIdentity && now >= nextIdentityAttempt) connectIdentity(() -> {});
             if (client.player != null && now >= nextMapBindingAttempt) {
@@ -84,21 +95,40 @@ public final class VersionClient {
                 }
             }
             TownHud.tick();
+            updateNavigation(client.player != null && gateway.loggedIn() && XaeroBridge.isCurrentWorld(), dimension(),
+                    client.player == null ? 0 : client.player.getBlockX(), client.player == null ? 0 : client.player.getBlockZ());
             boolean openRequested = false, projectRequested = false;
             while (openKey.consumeClick()) openRequested = true;
             while (projectKey.consumeClick()) projectRequested = true;
-            if (client.player != null && currentScreen() == null) {
-                if (openRequested) show(new TownScreen());
-                else if (projectRequested) TownHud.openProject();
+            ProjectKeyPress projectKeyPress = projectKeyPress();
+            TownGateway.Context context = gateway.context();
+            if (projectKeyContext != null && !projectKeyContext.equals(context)) projectKeyPress.reset();
+            projectKeyContext = context;
+            boolean inputAvailable = client.player != null && currentScreen() == null && client.isWindowActive();
+            int holdMillis = gateway.config().projectKeyHoldMillis;
+            if (holdMillis == 0) gateway.config().projectKeyHoldMillis = holdMillis = TownGateway.ClientConfig.DEFAULT_PROJECT_KEY_HOLD_MILLIS;
+            int projectAction = projectKeyPress.update(now, holdMillis * 1_000_000L,
+                    inputAvailable && !openRequested, projectKey.isDown(), projectRequested, navigation);
+            if (inputAvailable) {
+                if (openRequested) openTownScreen();
+                else if (projectAction == ProjectKeyPress.DETAILS) { boolean navigating = navigation != null; TownHud.openProject(); if (navigating && currentScreen() != null) completeNavigationHint(); }
+                else if (projectAction == ProjectKeyPress.STOP) { stopNavigation(); completeNavigationHint(); }
             }
-            updateNavigation(client.player != null && gateway.loggedIn() && XaeroBridge.isCurrentWorld(), dimension(),
-                    client.player == null ? 0 : client.player.getBlockX(), client.player == null ? 0 : client.player.getBlockZ());
-            if (gateway.loggedIn() && !gateway.townId.isEmpty() && !refreshing && now >= nextRefresh) {
+            if (gateway.loggedIn() && !gateway.townId.isEmpty() && !gateway.isLoading() && !refreshing && now >= nextRefresh) {
                 refreshing = true;
+                long refreshAttempt = identityAttempt;
                 nextRefresh = now + gateway.config().pollIntervalSeconds * 1_000_000_000L;
-                gateway.refresh().whenComplete((value, error) -> client.execute(() -> refreshing = false));
+                gateway.refresh().whenComplete((value, error) -> client.execute(() -> { if (refreshAttempt == identityAttempt) refreshing = false; }));
             }
         });
+    }
+
+    private static void completeNavigationHint() {
+        try { TownGateway.get().completeHint("navigation"); }
+        catch (IllegalStateException exception) {
+            TownGateway.get().status = exception.getMessage();
+            LOGGER.log(System.Logger.Level.WARNING, "Could not save navigation hint completion", exception);
+        }
     }
 
     static KeyMapping[] createKeyMappings() {
@@ -106,6 +136,44 @@ public final class VersionClient {
             new KeyMapping("key.yetanothertown.open", InputConstants.KEY_K, KEY_CATEGORY),
             new KeyMapping("key.yetanothertown.project", InputConstants.KEY_X, KEY_CATEGORY)
         };
+    }
+
+    /** 项目键按抬起区分短按；失焦、菜单与目标切换后等松手再接受新操作。 */
+    private static ProjectKeyPress projectKeyPress() {
+        if (projectKeyPress == null) projectKeyPress = new ProjectKeyPress();
+        return projectKeyPress;
+    }
+
+    static final class ProjectKeyPress {
+        static final int NONE = 0, DETAILS = 1, STOP = 2;
+        private long pressedAt;
+        private boolean pressed;
+        private boolean blocked;
+        private JsonObject target;
+
+        int update(long now, long holdDuration, boolean available, boolean down, boolean clicked, JsonObject navigation) {
+            if (!available || pressed && target != navigation) { reset(); return NONE; }
+            if (blocked) { if (!down) blocked = false; return NONE; }
+            if (!pressed) {
+                if (!clicked) return NONE;
+                if (!down) return DETAILS;
+                pressed = true; pressedAt = now; target = navigation;
+                return NONE;
+            }
+            if (target != null && now - pressedAt >= holdDuration) {
+                reset();
+                return STOP;
+            }
+            if (down) return NONE;
+            pressed = false; target = null;
+            return DETAILS;
+        }
+
+        void reset() { pressed = false; target = null; blocked = true; }
+    }
+
+    public static void openTownScreen() {
+        show(new TownScreen());
     }
 
     public static Screen createConfigScreen(Screen parent) {
@@ -124,7 +192,7 @@ public final class VersionClient {
                     gateway.configure(values.get("endpoint").getAsString(), values.get("entrySubtitleSeconds").getAsInt(), values.get("entryCooldownSeconds").getAsInt(),
                             values.get("pollIntervalSeconds").getAsInt(), values.get("animationEnabled").getAsBoolean(), values.get("projectOverlayEnabled").getAsBoolean());
                     show(parent);
-                }).withBreadcrumbTitle();
+                }).withBreadcrumbTitle().withServiceNotice().withServiceContext();
     }
 
     private static void initializeScreens(Minecraft minecraft) {
@@ -168,12 +236,17 @@ public final class VersionClient {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.player == null || connectingIdentity) return;
         connectingIdentity = true;
+        refreshing = false;
+        long attempt = ++identityAttempt;
         nextIdentityAttempt = System.nanoTime() + TownGateway.get().config().pollIntervalSeconds * 1_000_000_000L;
         String identity = playerId() + ":" + playerName();
+        String server = TownGateway.normalizeServerAddress(serverAddress());
+        TownGateway.get().setGameServerAddress(server);
         TownGateway.get().login(playerId(), playerName()).whenComplete((result, failure) -> minecraft.execute(() -> {
+            if (attempt != identityAttempt) return;
             connectingIdentity = false;
-            if (failure == null && minecraft.player != null && identity.equals(playerId() + ":" + playerName()) && TownGateway.get().loggedIn()) {
-                if (TownGateway.get().townId.isEmpty() && TownGateway.get().towns.size() > 0) TownGateway.get().selectTown(TownGateway.get().towns.get(0).getAsJsonObject().get("id").getAsString());
+            if (failure == null && minecraft.player != null && identity.equals(playerId() + ":" + playerName())
+                    && server.equals(TownGateway.normalizeServerAddress(serverAddress())) && TownGateway.get().loggedIn()) {
                 success.run();
             }
         }));
@@ -249,6 +322,7 @@ public final class VersionClient {
             target.addProperty("y", TownScreen.integer(position(), "y"));
         }
         if (!XaeroBridge.navigate(target)) return false;
+        projectKeyPress().reset();
         navigation = target;
         navigationTown = TownGateway.get().townId;
         navigationWorld = TownGateway.get().worldId;
@@ -261,6 +335,7 @@ public final class VersionClient {
     static void updateNavigation(boolean usable, String dimension, int blockX, int blockZ) {
         TownGateway gateway = TownGateway.get();
         if (navigation == null) return;
+        if (XaeroBridge.navigationWaypointRemoved()) { stopNavigation(); return; }
         if (!usable || !navigationTown.equals(gateway.townId) || !navigationWorld.equals(gateway.worldId)
                 || !gateway.context().equals(navigationContext) || !TownScreen.stringValue(navigation, "dimension").equals(dimension)) {
             clearNavigation();
@@ -278,5 +353,5 @@ public final class VersionClient {
         }
     }
     static void stopNavigation() { clearNavigation(); TownGateway.get().status = TownText.text("yat.status.navigation_stopped"); }
-    static void clearNavigation() { navigation = null; navigationTown = ""; navigationWorld = ""; navigationContext = null; XaeroBridge.clearNavigation(); }
+    static void clearNavigation() { projectKeyPress().reset(); navigation = null; navigationTown = ""; navigationWorld = ""; navigationContext = null; XaeroBridge.clearNavigation(); }
 }

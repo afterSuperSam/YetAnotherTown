@@ -17,28 +17,46 @@ import java.lang.classfile.instruction.InvokeInstruction;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.zip.ZipFile;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import net.fabricmc.loader.api.Version;
+import net.fabricmc.loader.api.VersionParsingException;
+import net.fabricmc.loader.api.metadata.version.VersionPredicate;
 
 /** 静态检查每套适配层引用的真实游戏、Fabric 和 Xaero 成员，不初始化游戏。 */
 public final class VerifyLinks {
+    private static final Map<String, JsonObject> metadataCache = new HashMap<>();
     private final List<ZipFile> archives = new ArrayList<>();
     private final Map<String, ClassModel> classes = new HashMap<>();
     private final Set<String> missing = new HashSet<>();
+    private Path classDirectory;
     private int references;
+    private boolean legacyMapControls;
 
     public static void main(String[] arguments) throws Exception {
-        if (arguments.length < 3) throw new IllegalArgumentException("Expected: mod.jar package-prefix classpath-lines.txt...");
+        boolean metadataOnly = arguments.length > 0 && arguments[0].equals("--metadata-only");
+        if (metadataOnly) arguments = Arrays.copyOfRange(arguments, 1, arguments.length);
+        if (arguments.length < 3) throw new IllegalArgumentException("Expected: mod.jar|classes-directory package-prefix classpath-lines.txt...");
         for (int index = 2; index < arguments.length; index++) {
             VerifyLinks verifier = new VerifyLinks();
             try {
-                verifier.archives.add(new ZipFile(arguments[0]));
+                Path input = Path.of(arguments[0]);
+                if (Files.isDirectory(input)) verifier.classDirectory = input;
+                else verifier.archives.add(new ZipFile(arguments[0]));
                 for (String jar : Files.readAllLines(Path.of(arguments[index]))) if (!jar.isBlank()) verifier.archives.add(new ZipFile(jar));
-                verifier.verify(arguments[1].replace('.', '/'));
+                if (metadataOnly) {
+                    List<String> failures = new ArrayList<>();
+                    verifier.verifyMetadata(arguments[1].replace('.', '/'), failures);
+                    System.out.println((failures.isEmpty() ? "COMPATIBLE" : "INCOMPATIBLE") + "\t" + arguments[index] + "\t" + String.join("; ", failures));
+                } else verifier.verify(arguments[1].replace('.', '/'));
             } catch (IllegalStateException exception) {
                 throw new IllegalStateException("Compatibility failed: " + Path.of(arguments[index]).getFileName() + "\n" + exception.getMessage(), exception);
             } finally {
@@ -49,17 +67,23 @@ public final class VerifyLinks {
 
     private void verify(String prefix) throws IOException {
         List<String> failures = new ArrayList<>();
-        var entries = archives.getFirst().entries();
+        verifyMetadata(prefix, failures);
+        List<String> names;
+        if (classDirectory != null) {
+            try (var entries = Files.walk(classDirectory)) {
+                names = entries.filter(Files::isRegularFile).map(file -> classDirectory.relativize(file).toString().replace('\\', '/')).toList();
+            }
+        } else names = archives.getFirst().stream().map(entry -> entry.getName()).toList();
         int checked = 0;
-        while (entries.hasMoreElements()) {
-            String name = entries.nextElement().getName();
+        for (String name : names) {
             if (!name.endsWith(".class") || !(name.startsWith(prefix + "/") || name.startsWith("dev/yetanothertown/mixin/") || name.equals("dev/yetanothertown/Bootstrap.class") || name.equals("dev/yetanothertown/ModMenuIntegration.class"))) continue;
             ClassModel model = load(name.substring(0, name.length() - 6));
             checked++;
             if (model.majorVersion() > 69) failures.add(name + ": requires Java newer than 25");
             for (var entry : model.constantPool()) {
                 if ((name.startsWith(prefix + "/XaeroBridge") || name.startsWith(prefix + "/ProjectHighlighter"))
-                        && entry instanceof Utf8Entry text && Set.of("cameraX", "cameraZ", "scale", "drawArea").contains(text.stringValue()))
+                        && entry instanceof Utf8Entry text && Set.of("cameraX", "cameraZ", "scale", "drawArea").contains(text.stringValue())
+                        && !(name.equals(prefix + "/XaeroBridge$CameraFields.class") && Set.of("cameraX", "cameraZ").contains(text.stringValue())))
                     failures.add(name + ": independent map projection must not replace native chunk highlighting: " + text.stringValue());
                 if (entry instanceof ClassEntry type && scoped(type.asInternalName())) {
                     references++;
@@ -93,6 +117,76 @@ public final class VerifyLinks {
         System.out.println(prefix + ": " + checked + " classes, " + references + " references verified against real dependency bytecode; game not initialized");
     }
 
+    /** 按 Fabric 的版本谓词核对依赖，并采用重复内置模组中版本最高的实际字节码。 */
+    private void verifyMetadata(String prefix, List<String> failures) throws IOException {
+        record Metadata(JsonObject value, Version version, ZipFile archive) {}
+        Map<String, Metadata> selected = new HashMap<>();
+        Map<ZipFile, String> identifiers = new HashMap<>();
+        try {
+            if (classDirectory != null) {
+                JsonObject value = JsonParser.parseString(resource("fabric.mod.json")).getAsJsonObject();
+                selected.put(value.get("id").getAsString(), new Metadata(value, Version.parse(value.get("version").getAsString()), null));
+            }
+            for (ZipFile archive : archives) {
+                var entry = archive.getEntry("fabric.mod.json");
+                if (entry == null) continue;
+                JsonObject value = metadataCache.get(archive.getName());
+                if (value == null) {
+                    try (var input = archive.getInputStream(entry)) {
+                        value = JsonParser.parseString(new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8)).getAsJsonObject();
+                    }
+                    metadataCache.put(archive.getName(), value);
+                }
+                String identifier = value.get("id").getAsString();
+                identifiers.put(archive, identifier);
+                Metadata candidate = new Metadata(value, Version.parse(value.get("version").getAsString()), archive);
+                Metadata previous = selected.get(identifier);
+                if (previous == null || candidate.version().compareTo(previous.version()) > 0) selected.put(identifier, candidate);
+            }
+            for (var iterator = archives.iterator(); iterator.hasNext();) {
+                ZipFile archive = iterator.next();
+                String identifier = identifiers.get(archive);
+                if (identifier != null && selected.get(identifier).archive() != archive) {
+                    archive.close();
+                    iterator.remove();
+                }
+            }
+            String minecraft = Map.of("dev/yetanothertown/v263", "26.3", "dev/yetanothertown/v262", "26.2", "dev/yetanothertown/v2612", "26.1.2").get(prefix);
+            if (minecraft == null) throw new IllegalArgumentException("Unknown Minecraft adapter: " + prefix);
+            Map<String, Version> provided = new HashMap<>();
+            provided.put("minecraft", Version.parse(minecraft));
+            provided.put("java", Version.parse("25"));
+            for (var entry : selected.entrySet()) {
+                provided.put(entry.getKey(), entry.getValue().version());
+                if (entry.getValue().value().has("provides")) for (JsonElement alias : entry.getValue().value().getAsJsonArray("provides"))
+                    provided.put(alias.getAsString(), entry.getValue().version());
+            }
+            Version worldMap = provided.get("xaeroworldmap");
+            legacyMapControls = worldMap != null && VersionPredicate.parse("<1.42.0").test(worldMap);
+            for (var entry : selected.entrySet()) for (String type : List.of("depends", "breaks")) {
+                JsonObject requirements = entry.getValue().value().getAsJsonObject(type);
+                if (requirements == null) continue;
+                for (var requirement : requirements.entrySet()) {
+                    Version installed = provided.get(requirement.getKey());
+                    boolean matches = installed != null && matchesVersion(requirement.getValue(), installed);
+                    if (type.equals("depends") ? !matches : matches)
+                        failures.add("Fabric metadata " + type + ": " + entry.getKey() + " " + entry.getValue().version().getFriendlyString()
+                                + " requires " + requirement.getKey() + " " + requirement.getValue() + "; selected " + (installed == null ? "missing" : installed.getFriendlyString()));
+                }
+            }
+        } catch (VersionParsingException | IllegalArgumentException exception) {
+            throw new IOException("Invalid Fabric dependency metadata", exception);
+        }
+    }
+
+    private static boolean matchesVersion(JsonElement requirement, Version installed) throws VersionParsingException {
+        if (requirement.isJsonArray()) {
+            for (JsonElement alternative : requirement.getAsJsonArray()) if (matchesVersion(alternative, installed)) return true;
+            return false;
+        }
+        return VersionPredicate.parse(requirement.getAsString()).test(installed);
+    }
+
     /** 检查原生注入目标、区块单位和实际注册路径，防止退回仅自建窗口可用的覆盖层。 */
     private void verifyNativeMap(String prefix, List<String> failures) throws IOException {
         ClassModel map = load("xaero/map/gui/GuiMap");
@@ -101,6 +195,20 @@ public final class VerifyLinks {
                 "rightClickMenu", "Lxaero/map/gui/dropdown/rightclick/GuiRightClickMenu;", "overWaypointsMenu", "Z", "overPlayersMenu", "Z").entrySet()) {
             if (map == null || map.fields().stream().noneMatch(value -> value.fieldName().equalsString(field.getKey()) && value.fieldType().equalsString(field.getValue())))
                 failures.add("Xaero reflection contract changed: GuiMap." + field.getKey() + field.getValue());
+        }
+        // 原生相机仅用于一次定位，不参与投影或项目图层绘制。
+        for (var field : Map.of("cameraX", "D", "cameraZ", "D", "shouldResetCameraPos", "Z",
+                "cameraDestination", "[I", "cameraDestinationAnimX", "Lxaero/map/animation/SlowingAnimation;",
+                "cameraDestinationAnimZ", "Lxaero/map/animation/SlowingAnimation;", "prevPlayerDimDiv", "D").entrySet()) {
+            if (map == null || map.fields().stream().noneMatch(value -> value.fieldName().equalsString(field.getKey()) && value.fieldType().equalsString(field.getValue())))
+                failures.add("Xaero camera contract changed: GuiMap." + field.getKey());
+        }
+        // 1.42.0 前原生地图没有隐藏界面和相机附着模式；两种契约分别核对。
+        for (String field : List.of("hiddenUI", "attachedCamera")) {
+            var control = map == null ? null : map.fields().stream().filter(value -> value.fieldName().equalsString(field)).findFirst().orElse(null);
+            if (legacyMapControls ? control != null : control == null || !control.fieldType().equalsString("Z")
+                    || !control.flags().has(java.lang.reflect.AccessFlag.STATIC))
+                failures.add("Xaero map controls contract changed: GuiMap." + field + " (legacy=" + legacyMapControls + ")");
         }
         for (String[] method : List.of(
                 new String[]{"xaero/map/highlight/HighlighterRegistry", "end", "()V"},
@@ -241,6 +349,10 @@ public final class VerifyLinks {
     }
 
     private String resource(String name) throws IOException {
+        if (classDirectory != null) {
+            Path file = classDirectory.resolve(name);
+            return Files.isRegularFile(file) ? Files.readString(file) : "";
+        }
         var entry = archives.getFirst().getEntry(name);
         if (entry == null) return "";
         try (var input = archives.getFirst().getInputStream(entry)) { return new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8); }
@@ -264,6 +376,14 @@ public final class VerifyLinks {
     private ClassModel load(String name) throws IOException {
         if (classes.containsKey(name)) return classes.get(name);
         if (missing.contains(name)) return null;
+        if (classDirectory != null) {
+            Path file = classDirectory.resolve(name + ".class");
+            if (Files.isRegularFile(file)) {
+                ClassModel model = ClassFile.of().parse(Files.readAllBytes(file));
+                classes.put(name, model);
+                return model;
+            }
+        }
         for (ZipFile archive : archives) {
             var entry = archive.getEntry(name + ".class");
             if (entry == null) continue;
@@ -273,6 +393,7 @@ public final class VerifyLinks {
                 return model;
             }
         }
+        if (name.startsWith("java/") || name.startsWith("javax/") || name.startsWith("jdk/") || name.startsWith("sun/") || name.startsWith("com/sun/"))
         try (var input = ClassLoader.getSystemResourceAsStream(name + ".class")) {
             if (input != null) {
                 ClassModel model = ClassFile.of().parse(input.readAllBytes());

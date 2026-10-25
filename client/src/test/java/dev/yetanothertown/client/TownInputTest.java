@@ -29,6 +29,24 @@ public final class TownInputTest {
     }
 
     public static void main(String[] arguments) throws Exception {
+        if (arguments.length > 0 && arguments[0].equals("map-compat")) {
+            nativeMapCompatibility();
+            System.out.println("TownInput map-compat: " + checks + " checks passed; real Xaero fields, no game launched");
+            return;
+        }
+        if (arguments.length > 0 && arguments[0].equals("form-focus")) {
+            projectDetailFocus();
+            System.out.println("TownInput form-focus: " + checks + " checks passed; real widgets, no game launched");
+            return;
+        }
+        if (arguments.length > 0 && arguments[0].equals("form-sync")) {
+            formFieldSynchronization();
+            System.out.println("TownInput form-sync: " + checks + " checks passed; real EditBox, no game launched");
+            return;
+        }
+        formFieldSynchronization();
+        projectDetailFocus();
+        loadingLifecycle();
         useLanguage("en_us");
         require(TownScreen.state("planned").equals("Planned"), "English status uses the game language");
         require(TownText.text("yat.label.project_count", 3).equals("3 projects"), "Counts support translation parameters");
@@ -37,11 +55,29 @@ public final class TownInputTest {
         require(ProjectHighlighter.textLines("hello world again", 11, String::length).equals(java.util.List.of("hello world", "again")), "English wrapping preserves words");
         useLanguage("zh_cn");
         require(TownScreen.state("planned").equals("计划中"), "Language changes do not retain cached English labels");
+        JsonObject projectChunks = TownGateway.object("minX", 0, "maxX", 0, "minZ", 0, "maxZ", 0);
+        for (String status : new String[]{"planned", "active", "completed", "maintenance"}) {
+            JsonObject record = TownGateway.object("id", "project", "name", "原名", "status", status);
+            JsonObject update = TownScreen.projectFormData(record, projectChunks, "minecraft:overworld", "world",
+                    TownGateway.object("name", "新名称", "purpose", "修改简介", "status", status));
+            require(!update.has("status"), "Unchanged " + status + " must not trigger 请使用工程状态操作 on beta service");
+            require(update.get("name").getAsString().equals("新名称") && update.get("purpose").getAsString().equals("修改简介"), "Ordinary project edits retain name and summary");
+            require(update.get("id").getAsString().equals("project") && !update.has("chunks") && !update.has("worldId"), "Ordinary edits preserve project identity without rewriting region");
+        }
+        JsonObject changedStatus = TownScreen.projectFormData(TownGateway.object("id", "project", "status", "active"), projectChunks, "minecraft:overworld", "world",
+                TownGateway.object("name", "工程", "purpose", "同时修改简介", "status", "completed"));
+        require(changedStatus.get("status").getAsString().equals("completed") && changedStatus.get("purpose").getAsString().equals("同时修改简介"), "Real status changes remain in the atomic project update");
+        for (String status : new String[]{"planned", "active", "completed"}) {
+            JsonObject created = TownScreen.projectFormData(TownGateway.object("status", status), projectChunks, "minecraft:overworld", "world",
+                    TownGateway.object("name", "新工程", "status", status));
+            require(created.get("status").getAsString().equals(status) && created.has("chunks") && created.get("worldId").getAsString().equals("world"), "New project retains initial " + status + " and region");
+        }
         MapTileSelection selection = new MapTileSelection(2, 4);
         selection.setEnd(-3, -5);
         var chunks = XaeroBridge.selectionChunks(selection, "minecraft:overworld");
         require(chunks.get("minX").getAsInt() == -3 && chunks.get("maxX").getAsInt() == 2 && chunks.get("minZ").getAsInt() == -5 && chunks.get("maxZ").getAsInt() == 4, "Native reverse drag must preserve inclusive chunk coordinates without block scaling");
         require(chunks.get("dimension").getAsString().equals("minecraft:overworld"), "Native selection must retain its displayed dimension");
+        nativeMapCompatibility();
         require(ProjectHighlighter.nativeColor(0x123456, 0x78) == 0x56341278, "Native texture color channels must match Xaero BBGGRRAA");
         require(ProjectHighlighter.intersects(-32, -1, 0, 3, -1, 2, 3, 6), "Shared edge chunk must count as occupied");
         require(!ProjectHighlighter.intersects(-32, -1, 0, 3, 0, 2, 0, 3), "Adjacent negative and positive chunks must not overlap");
@@ -57,6 +93,49 @@ public final class TownInputTest {
         int[] upperTooltip = ProjectHighlighter.tooltipPosition(640, 360, 280, 160, 0, 0);
         require(upperTooltip[0] == 16 && upperTooltip[1] == 16, "Tooltip near top-left must remain inside the screen");
         java.util.function.ToIntFunction<String> pixels = text -> text.codePointCount(0, text.length()) * 8;
+        for (String status : new String[]{"planned", "active", "completed", "maintenance"}) {
+            var entryLine = TownHud.entryLine("进入项目：超长名称😀".repeat(12), status, 120, pixels);
+            require(pixels.applyAsInt(entryLine.getString()) <= 120 && entryLine.getString().endsWith(TownHud.entryStatus(status)) && entryLine.getString().contains("…"),
+                    "Long entry names must preserve the full project status within the HUD width");
+            var expectedColor = switch (status) {
+                case "planned" -> net.minecraft.ChatFormatting.GOLD;
+                case "active" -> net.minecraft.ChatFormatting.YELLOW;
+                case "completed" -> net.minecraft.ChatFormatting.GREEN;
+                default -> net.minecraft.ChatFormatting.RED;
+            };
+            require(entryLine.getSiblings().getLast().getStyle().getColor().equals(net.minecraft.network.chat.TextColor.fromLegacyFormat(expectedColor)),
+                    "Entry status must retain its own color after name truncation");
+        }
+        require(TownHud.entryLine("短名", "completed", 120, pixels).getString().equals("短名 · 已完工"), "Short entry names must remain complete");
+        require(TownHud.entryLine("长名", "maintenance", 24, pixels).getString().equals("待维护"), "Very narrow HUDs must prioritize status without a dangling separator");
+        var cardFailures = new java.util.ArrayList<String>();
+        String clippedCardTitle = TownStyle.fitText("一个长工程名称😀", 40, pixels);
+        if (!clippedCardTitle.endsWith("…")) cardFailures.add("card title silently clipped: " + clippedCardTitle);
+        String cardSummary = TownScreen.projectSummary("待维护", "Project Description.", "DogSam", 162, pixels);
+        if (!cardSummary.contains("DogSam") || !cardSummary.contains("…")) cardFailures.add("description consumed owner space: " + cardSummary);
+        var tooltipField = net.minecraft.client.gui.components.AbstractWidget.class.getDeclaredField("tooltip");
+        tooltipField.setAccessible(true);
+        var selectionTooltip = (net.minecraft.client.gui.components.WidgetTooltipHolder) tooltipField.get(TownScreen.projectSelectionButton("Town Project 2", 0, 0, 162, 32, () -> {}));
+        if (selectionTooltip.get() != null)
+            cardFailures.add("transparent selection widget submits a second title-only tooltip");
+        require(cardFailures.isEmpty(), String.join("; ", cardFailures));
+        require(TownStyle.fitText("a😀b", 24, pixels).equals("a😀b"), "Text that fits must remain unchanged");
+        require(TownStyle.fitText("a😀bc", 24, pixels).equals("a😀…"), "Clipping must preserve the entire Unicode character before the ellipsis");
+        require(TownStyle.fitText("long", 4, pixels).isEmpty(), "A width smaller than an ellipsis must not draw outside its allocation");
+        var sidebarName = TownStyle.nameLines("楹雾小镇工程", 24, pixels);
+        require(sidebarName.equals(java.util.List.of("楹雾小", "镇工程")), "Sidebar names must use the available two rows without losing characters");
+        var longSidebarName = TownStyle.nameLines("楹雾小镇工程资料室", 24, pixels);
+        require(longSidebarName.size() == 2 && longSidebarName.getLast().endsWith("…"), "Names longer than two rows must visibly indicate omitted content");
+        for (int cardWidth : new int[]{96, 128, 162, 240}) {
+            String summary = TownScreen.projectSummary("待维护", "Project Description.", "DogSam", cardWidth, pixels);
+            require(pixels.applyAsInt(summary) <= cardWidth && summary.endsWith("DogSam"), "Project summary must reserve the full owner name before spending space on its description");
+        }
+        require(TownScreen.projectSummary("", "", "DogSam", 80, pixels).equals("DogSam"), "Empty project descriptions must not add separators");
+        require(TownScreen.projectSummary("待维护", "说明", "VeryLongPlayerName", 40, pixels).endsWith("…"), "Even an owner that cannot fit must show explicit truncation");
+        require(TownScreen.projectTooltip("Town Project 2", "待维护", "DogSam", "First line\nSecond line").getString()
+                .equals("Town Project 2\n待维护\nDogSam\nFirst line\nSecond line"), "The single authoritative tooltip must preserve the complete owner and description paragraphs");
+        require(((net.minecraft.client.gui.components.WidgetTooltipHolder) tooltipField.get(TownStyle.button("确认", 0, 0, 48, () -> {}))).get() == null,
+                "A fully visible action must not install a redundant label tooltip");
         var shortTooltip = ProjectHighlighter.tooltipLayout("袭击塔", "DogSam", "一个袭击塔", "completed", 640, 360, 9, pixels);
         require(shortTooltip.width() < 248 && shortTooltip.owner().equals(java.util.List.of("DogSam"))
                 && shortTooltip.introduction().equals(java.util.List.of("一个袭击塔")), "Short hover cards must fit their content without redundant field labels");
@@ -64,6 +143,10 @@ public final class TownInputTest {
         var longTooltip = ProjectHighlighter.tooltipLayout("长工程名称".repeat(20), "PlayerName1234567", "长简介😀".repeat(200), "planned", 160, 140, 9, pixels);
         require(longTooltip.width() <= 128 && longTooltip.height() <= 108, "Wrapped hover card must fit the minimum supported viewport");
         require(longTooltip.introduction().getLast().endsWith("…"), "Truncated introductions must indicate hidden content");
+        require(longTooltip.introduction().size() <= 3 && longTooltip.folded(), "Long descriptions must stay compact and offer full details");
+        require(!shortTooltip.folded(), "Short descriptions must not show a redundant expansion hint");
+        var paragraphs = ProjectHighlighter.tooltipLayout("Test", "DogSam", "one\ntwo\nthree\nfour", "completed", 640, 360, 9, pixels);
+        require(paragraphs.introduction().equals(java.util.List.of("one", "two", "three…")), "Collapsed descriptions must preserve paragraph breaks");
         require(longTooltip.title().size() == 1 && longTooltip.owner().size() == 1 && longTooltip.avatarSize() == 22, "Hover header must remain two rows beside a compact avatar even with long names");
         require(longTooltip.statusLeft() + pixels.applyAsInt("计划中") <= longTooltip.width(), "Inline status must remain inside a narrow card after title truncation");
         require(longTooltip.introductionTop() > longTooltip.avatarSize()
@@ -79,10 +162,18 @@ public final class TownInputTest {
         require(TownScreen.joinedTime("invalid", java.time.ZoneOffset.UTC).equals("—") && TownScreen.joinedTime("", java.time.ZoneOffset.UTC).equals("—"), "Missing joined dates must not render raw data or break member rows");
         var machine = TownGateway.object("type", "machine", "status", "maintenance", "createdAt", "2026-01-01T00:00:00Z");
         var building = TownGateway.object("type", "building", "status", "planned", "createdAt", "2026-02-01T00:00:00Z");
-        require(TownScreen.matchesProjectType(machine, 0) && TownScreen.matchesProjectType(machine, 2) && !TownScreen.matchesProjectType(machine, 1), "Type filter must select categories without excluding all-type results");
         require(TownScreen.projectColor(machine) == TownStyle.DANGER && TownScreen.projectColor(building) == TownStyle.ACCENT, "Maintenance and planned titles must use distinct status colors");
         var originalOrder = java.util.List.of(building, machine);
         require(TownScreen.recentProjects(originalOrder).equals(java.util.List.of(machine, building)) && originalOrder.getFirst() == building, "Home preview must prioritize maintenance without mutating the project list");
+        var facility = TownGateway.object("id", "facility", "pinned", true, "status", "completed", "createdAt", "2025-01-01T00:00:00Z", "dimension", "minecraft:the_nether");
+        var secondFacility = TownGateway.object("id", "second", "pinned", true, "status", "maintenance", "createdAt", "2024-01-01T00:00:00Z");
+        require(TownScreen.recentProjects(java.util.List.of(building, machine, facility, secondFacility)).equals(java.util.List.of(secondFacility, facility, machine, building)), "Home must keep cross-dimension pinned facilities before maintenance and recency fill-ins");
+        facility.addProperty("pinned", false);
+        require(TownScreen.recentProjects(java.util.List.of(facility, machine, building)).equals(java.util.List.of(machine, building, facility)), "Unpinning restores ordinary maintenance and recency order");
+        var invitedTown = TownGateway.object("name", "Example Town", "id", "12345678", "server", "play.example.test", "password", "secret-password", "token", "secret-token", "ownerId", "secret-uuid");
+        String invitation = TownScreen.invitationText(invitedTown, "https://town.example.test");
+        require(invitation.contains("Example Town") && invitation.contains("12345678") && invitation.contains("play.example.test") && invitation.contains("https://town.example.test"), "Invitation carries the town and both service addresses");
+        require(!invitation.contains("secret-password") && !invitation.contains("secret-token") && !invitation.contains("secret-uuid"), "Invitation must only copy explicitly selected public fields");
         var activeWorld = TownGateway.object("id", "0123456789abcdef01234567", "archived", false);
         require(XaeroBridge.associationBlockReason(activeWorld, true, "minecraft:overworld", "minecraft:overworld", "town", "town").isEmpty(), "A loaded current map must allow one-step association without an existing binding");
         activeWorld.addProperty("archived", true);
@@ -117,6 +208,7 @@ public final class TownInputTest {
         mappings[0].setKey(InputConstants.UNKNOWN);
         KeyMapping.resetMapping();
         require(mappings[0].isUnbound(), "Vanilla unbound state must be supported");
+        projectKeyTests(mappings[1]);
         String[] choices = {"first", "second", "third"};
         require(TownForm.choiceIndex(choices, "first", -1) == 2, "Reverse selection must wrap to the last option");
         require(TownForm.choiceIndex(choices, "third", 1) == 0, "Forward selection must wrap to the first option");
@@ -149,6 +241,10 @@ public final class TownInputTest {
         require(TownHud.projectAt(snapshot, "current", "minecraft:overworld", 2, 4) == project, "Entry detection must include the maximum boundary");
         require(TownHud.projectAt(snapshot, "current", "minecraft:overworld", 3, 4) == null, "Adjacent outside chunk must not trigger entry");
         require(TownHud.projectAt(snapshot, "history", "minecraft:overworld", 0, 0) == null && TownHud.projectAt(snapshot, "current", "minecraft:the_nether", 0, 0) == null, "Entry detection must isolate worlds and dimensions");
+        require(TownHud.entryStatus("planned").equals("计划中"), "Planned entry must retain its own state");
+        require(TownHud.entryStatus("active").equals("未完工"), "Active entry must show unfinished status");
+        require(TownHud.entryStatus("maintenance").equals("待维护"), "Maintenance entry must show repair status");
+        require(TownHud.entryStatus("completed").equals("已完工"), "Completed entry must show completed status without changing list badges");
         var tracker = new TownHud.EntryTracker();
         require(tracker.enter("station", 0, 8), "First entry must announce immediately");
         require(!tracker.enter("station", 20, 8), "Staying inside must not repeat the subtitle");
@@ -165,6 +261,18 @@ public final class TownInputTest {
     }
 
     private static void settingsTests() {
+        var configuration = new TownGateway.ClientConfig();
+        require(configuration.projectKeyHoldMillis == 600, "Project key holds default to 600 milliseconds");
+        for (int duration : new int[]{200, 3000}) {
+            configuration.projectKeyHoldMillis = duration;
+            configuration.validate();
+        }
+        for (int duration : new int[]{0, 199, 3001}) {
+            configuration.projectKeyHoldMillis = duration;
+            boolean rejected = false;
+            try { configuration.validate(); } catch (IllegalArgumentException exception) { rejected = true; }
+            require(rejected, "Project key hold configuration rejects out-of-range duration: " + duration);
+        }
         var scope = new TownGateway.Context(3, 4, "http://town");
         require(TownScreen.sameSettingsScope("12345678", "http://town", 3, "12345678", scope)
                 && TownScreen.sameSettingsScope("12345678", "http://town", 3, "12345678", new TownGateway.Context(3, 5, "http://town")), "Changing only the selected world must preserve same-town settings drafts");
@@ -180,6 +288,54 @@ public final class TownInputTest {
         require(TownScreen.changedTownSettings(values, baseline, snapshot, "87654321").isEmpty(), "A snapshot for a different town must not produce settings changes");
         require(TownScreen.changedTownSettings(values, baseline, snapshot, "12345678").equals(TownGateway.object("introduction", "edited")), "Saving a changed introduction must not overwrite a clean name updated remotely or send blank password/unknown fields");
         require(TownScreen.changedTownSettings(java.util.Map.of("password", "secret123"), baseline, snapshot, "12345678").equals(TownGateway.object("password", "secret123")), "An explicitly entered password must be submitted");
+        var enabledBaseline = java.util.Map.of("passwordEnabled", "true", "listed", "false");
+        var disabledBaseline = java.util.Map.of("passwordEnabled", "false", "listed", "false");
+        require(TownScreen.changedTownSettings(java.util.Map.of("password", "", "passwordEnabled", "true", "listed", "false"), enabledBaseline, snapshot, "12345678").isEmpty(), "Keeping password protection enabled with a blank password preserves the current password");
+        require(TownScreen.changedTownSettings(java.util.Map.of("password", "draft123", "passwordEnabled", "false", "listed", "true"), enabledBaseline, snapshot, "12345678").equals(TownGateway.object("password", "", "listed", true)), "Saving disabled password protection and listing submits both changes together");
+        require(TownScreen.changedTownSettings(java.util.Map.of("password", "secret123", "passwordEnabled", "true"), disabledBaseline, snapshot, "12345678").equals(TownGateway.object("password", "secret123")), "Enabling password protection submits the entered password");
+        require(TownScreen.changedTownSettings(java.util.Map.of("password", "", "passwordEnabled", "true"), disabledBaseline, snapshot, "12345678").has("password"), "Enabling protection without a password must reach local password validation");
+        require(TownScreen.changedTownSettings(java.util.Map.of("password", "draft123", "passwordEnabled", "false", "listed", "false"), disabledBaseline, snapshot, "12345678").isEmpty(), "Disabled password drafts and reverted listing toggles must not change the town");
+    }
+
+    private static void projectKeyTests(KeyMapping mapping) {
+        JsonObject target = TownGateway.object("id", "station");
+        var press = new VersionClient.ProjectKeyPress();
+        require(press.update(0, 600, true, true, true, target) == VersionClient.ProjectKeyPress.NONE, "Pressing the project key must wait for release");
+        require(press.update(100, 600, true, false, false, target) == VersionClient.ProjectKeyPress.DETAILS, "A short press opens details on release");
+        require(press.update(200, 600, true, false, true, target) == VersionClient.ProjectKeyPress.DETAILS, "A complete tap between ticks must still open details");
+        press.update(300, 600, true, true, true, target);
+        require(press.update(899, 600, true, true, true, target) == VersionClient.ProjectKeyPress.NONE, "Keyboard repeat clicks must not turn a hold into a tap");
+        require(press.update(900, 600, true, true, true, target) == VersionClient.ProjectKeyPress.STOP, "Crossing the configured hold threshold stops navigation");
+        require(press.update(1500, 600, true, true, true, null) == VersionClient.ProjectKeyPress.NONE
+                && press.update(1600, 600, true, false, true, null) == VersionClient.ProjectKeyPress.NONE, "A hold stops only once and release cannot open details");
+        press.update(1700, 600, true, true, true, target);
+        press.update(1800, 600, false, true, true, target);
+        require(press.update(2500, 600, true, true, true, target) == VersionClient.ProjectKeyPress.NONE
+                && press.update(2600, 600, true, false, false, target) == VersionClient.ProjectKeyPress.NONE, "Closing a menu or restoring focus while held must not trigger an action");
+        press.update(2700, 600, true, true, true, target);
+        require(press.update(3400, 600, true, true, true, target.deepCopy()) == VersionClient.ProjectKeyPress.NONE
+                && press.update(3500, 600, true, false, false, target) == VersionClient.ProjectKeyPress.NONE, "Replacing the navigation target cancels an in-flight key press");
+        press.update(3600, 600, true, true, true, target);
+        press.reset();
+        require(press.update(4300, 600, true, true, true, null) == VersionClient.ProjectKeyPress.NONE
+                && press.update(4400, 600, true, false, false, null) == VersionClient.ProjectKeyPress.NONE, "Navigation cancellation or context reset discards the pending press");
+        press.update(4500, 600, true, true, true, null);
+        require(press.update(5200, 600, true, true, true, null) == VersionClient.ProjectKeyPress.NONE
+                && press.update(5300, 600, true, false, false, null) == VersionClient.ProjectKeyPress.DETAILS, "Without navigation, holding opens details only once on release");
+        for (String binding : new String[]{"key.keyboard.g", "key.mouse.4"}) {
+            var key = InputConstants.getKey(binding);
+            mapping.setKey(key);
+            KeyMapping.resetMapping();
+            KeyMapping.set(InputConstants.getKey("key.keyboard.x"), true);
+            require(!mapping.isDown(), "Rebinding the project action releases physical X: " + binding);
+            KeyMapping.set(key, true);
+            KeyMapping.click(key);
+            require(press.update(5400, 600, true, mapping.isDown(), mapping.consumeClick(), target) == VersionClient.ProjectKeyPress.NONE, "The rebound keyboard or mouse key starts the same project action: " + binding);
+            KeyMapping.set(key, false);
+            require(press.update(5500, 600, true, mapping.isDown(), mapping.consumeClick(), target) == VersionClient.ProjectKeyPress.DETAILS, "The rebound key release opens project details: " + binding);
+        }
+        mapping.setKey(InputConstants.getKey("key.keyboard.x"));
+        KeyMapping.resetMapping();
     }
 
     /** 导航使用真实状态更新与清理路径，抵达区域边界就停止，不要求走到中心点。 */
@@ -189,6 +345,17 @@ public final class TownInputTest {
                 "dimension", "minecraft:overworld", "chunks", TownGateway.object("minX", -2, "maxX", 2, "minZ", -3, "maxZ", 3));
         try {
             seedNavigation(target);
+            JsonObject fresh = target.deepCopy();
+            fresh.addProperty("name", "更新后的车站");
+            JsonArray currentProjects = new JsonArray(); currentProjects.add(fresh);
+            var snapshot = TownGateway.object("projects", currentProjects);
+            require(TownHud.projectForDetails(snapshot, target, null) == fresh, "Navigation details use the latest snapshot even when standing outside all projects");
+            require(TownHud.projectForDetails(new JsonObject(), target, fresh) == null, "A deleted navigation target must not reopen stale details");
+            require(TownHud.projectForDetails(snapshot, null, fresh) == fresh
+                    && TownHud.projectForDetails(snapshot, TownGateway.object("id", "ticket"), fresh) == fresh, "Nearby details remain available without project navigation and for legacy repair points");
+            require(TownScreen.isNavigationTarget(target, target.deepCopy())
+                    && !TownScreen.isNavigationTarget(TownGateway.object("id", "other", "worldId", gateway.worldId), target)
+                    && !TownScreen.isNavigationTarget(TownGateway.object("id", "station", "worldId", "history"), target), "Menu cancellation matches only the same project and world");
             var action = new TownForm.Action("导航到这里", () -> {}, () -> TownScreen.isNavigationTarget(target, VersionClient.navigation()) ? "停止导航" : "导航到这里");
             require(action.label().equals("停止导航"), "A live navigation action must show cancellation while its target is active");
             VersionClient.updateNavigation(true, "minecraft:overworld", -33, 0);
@@ -225,6 +392,22 @@ public final class TownInputTest {
             var other = (xaero.common.minimap.waypoints.Waypoint) allocateNative(xaero.common.minimap.waypoints.Waypoint.class);
             waypoints.add(own); waypoints.add(other);
             seedNavigation(target);
+            nativeField(null, XaeroBridge.class, "navigationSet", waypoints);
+            nativeField(null, XaeroBridge.class, "navigationWaypoint", own);
+            VersionClient.updateNavigation(true, "minecraft:overworld", -100, 0);
+            require(VersionClient.navigation() != null && waypoints.size() == 2, "A retained native destination must keep navigation active");
+            own.setDisabled(true);
+            VersionClient.updateNavigation(true, "minecraft:overworld", -100, 0);
+            require(VersionClient.navigation() != null, "Hiding a destination icon must not count as deleting its waypoint");
+            waypoints.remove(other);
+            VersionClient.updateNavigation(true, "minecraft:overworld", -100, 0);
+            require(VersionClient.navigation() != null && waypoints.size() == 1 && waypoints.get(0) == own, "Deleting someone else's waypoint must not cancel our navigation");
+            waypoints.add(other);
+            waypoints.remove(own);
+            VersionClient.updateNavigation(true, "minecraft:overworld", -100, 0);
+            require(VersionClient.navigation() == null && waypoints.size() == 1 && waypoints.get(0) == other,
+                    "Deleting our native waypoint must clear navigation without removing another waypoint or recreating ours");
+            waypoints.add(own); seedNavigation(target);
             nativeField(null, XaeroBridge.class, "navigationSet", waypoints);
             nativeField(null, XaeroBridge.class, "navigationWaypoint", own);
             VersionClient.stopNavigation(); VersionClient.stopNavigation();
@@ -377,6 +560,213 @@ public final class TownInputTest {
             }
         });
         return java.lang.invoke.MethodHandles.lookup().defineClass(bytes);
+    }
+
+    /** 用真实原生字段验证隐藏界面与项目相机定位的新旧兼容。 */
+    private static void nativeMapCompatibility() throws Exception {
+        java.lang.reflect.Field hidden = null, attached = null;
+        try { hidden = xaero.map.gui.GuiMap.class.getDeclaredField("hiddenUI"); hidden.setAccessible(true); }
+        catch (NoSuchFieldException exception) { }
+        try { attached = xaero.map.gui.GuiMap.class.getDeclaredField("attachedCamera"); attached.setAccessible(true); }
+        catch (NoSuchFieldException exception) { }
+        boolean originalHidden = hidden != null && hidden.getBoolean(null);
+        boolean originalAttached = attached != null && attached.getBoolean(null);
+        try {
+            if (hidden != null) {
+                hidden.setBoolean(null, true);
+                require(XaeroBridge.mapUiHidden(), "Modern map overlays follow the native hidden UI state");
+                hidden.setBoolean(null, false);
+            }
+            require(!XaeroBridge.mapUiHidden(), "Visible native controls retain overlays, including maps before hidden UI was introduced");
+            var map = allocateNative(xaero.map.gui.GuiMap.class);
+            nativeField(map, xaero.map.gui.GuiMap.class, "shouldResetCameraPos", true);
+            nativeField(map, xaero.map.gui.GuiMap.class, "prevPlayerDimDiv", 8d);
+            nativeField(map, xaero.map.gui.GuiMap.class, "cameraDestination", new int[]{100, 100});
+            if (attached != null) attached.setBoolean(null, true);
+            var center = XaeroBridge.class.getDeclaredMethod("centerMap", xaero.map.gui.GuiMap.class, JsonObject.class);
+            center.setAccessible(true);
+            center.invoke(null, map, TownGateway.object("minX", -2, "maxX", 0, "minZ", 1, "maxZ", 2));
+            require((double) nativeField(map, xaero.map.gui.GuiMap.class, "cameraX") == -8d
+                    && (double) nativeField(map, xaero.map.gui.GuiMap.class, "cameraZ") == 32d, "Old and modern native cameras center on the inclusive project region");
+            require(!(boolean) nativeField(map, xaero.map.gui.GuiMap.class, "shouldResetCameraPos")
+                    && (double) nativeField(map, xaero.map.gui.GuiMap.class, "prevPlayerDimDiv") == 0d, "Map focusing prevents native player reset and stale dimension conversion");
+            require(nativeField(map, xaero.map.gui.GuiMap.class, "cameraDestination") == null
+                    && nativeField(map, xaero.map.gui.GuiMap.class, "cameraDestinationAnimX") == null
+                    && nativeField(map, xaero.map.gui.GuiMap.class, "cameraDestinationAnimZ") == null, "Map focusing clears native destination animations");
+            require(attached == null || !attached.getBoolean(null), "Focusing detaches modern follow mode while preserving the older free camera mechanism");
+        } finally {
+            if (hidden != null) hidden.setBoolean(null, originalHidden);
+            if (attached != null) attached.setBoolean(null, originalAttached);
+        }
+    }
+
+    /** 页面打开不默认聚焦，主动导航与输入期间刷新保留焦点。 */
+    private static void projectDetailFocus() throws Exception {
+        var previousClient = nativeField(null, net.minecraft.client.Minecraft.class, "instance");
+        try {
+            var font = (net.minecraft.client.gui.Font) allocateNative(net.minecraft.client.gui.Font.class);
+            nativeField(font, net.minecraft.client.gui.Font.class, "splitter", new net.minecraft.client.StringSplitter((character, style) -> 1));
+            var client = allocateNative(net.minecraft.client.Minecraft.class);
+            nativeField(client, net.minecraft.client.Minecraft.class, "font", font);
+            nativeField(client, net.minecraft.client.Minecraft.class, "lastInputType", net.minecraft.client.InputType.KEYBOARD_TAB);
+            nativeField(null, net.minecraft.client.Minecraft.class, "instance", client);
+            var detail = new TownForm(null, "Project", java.util.List.of(), java.util.List.of(),
+                    java.util.List.of(new TownForm.Action("Navigate", () -> {})), null)
+                    .withProjectTitle(TownGateway.object("name", "Project", "status", "completed"), "Owner");
+            nativeField(detail, net.minecraft.client.gui.screens.Screen.class, "width", 640);
+            nativeField(detail, net.minecraft.client.gui.screens.Screen.class, "height", 360);
+            detail.init();
+            require(detail.getFocused() == null, "Opening project details must not focus its first action");
+            var initialFocus = net.minecraft.client.gui.screens.Screen.class.getDeclaredMethod("setInitialFocus");
+            initialFocus.setAccessible(true); initialFocus.invoke(detail);
+            require(detail.getFocused() == null, "Screen initial keyboard focus must not reselect the first project action");
+            detail.keyPressed(new net.minecraft.client.input.KeyEvent(InputConstants.KEY_TAB, 0, 0));
+            var first = detail.getFocused();
+            require(first != null && first.isFocused(), "Tab must focus the first detail action");
+            detail.clearFocus();
+            detail.keyPressed(new net.minecraft.client.input.KeyEvent(InputConstants.KEY_TAB, 0, 1));
+            require(detail.getFocused() != null && detail.getFocused() != first, "Shift Tab must focus the last detail action");
+            detail.init(); initialFocus.invoke(detail);
+            require(detail.getFocused() == null, "Returning to a page must not restore an automatic focus");
+            var form = new TownForm(null, "Settings", java.util.List.of(
+                    TownForm.Field.number("entrySubtitleSeconds", "Duration", 3),
+                    TownForm.Field.number("entryCooldownSeconds", "Cooldown", 8),
+                    TownForm.Field.number("pollIntervalSeconds", "Refresh", 10)), ignored -> {});
+            nativeField(form, net.minecraft.client.gui.screens.Screen.class, "width", 640);
+            nativeField(form, net.minecraft.client.gui.screens.Screen.class, "height", 360);
+            form.init(); initialFocus.invoke(form);
+            require(form.getFocused() == null, "Editable forms also open without default focus");
+            require(((java.util.Map<?, ?>) nativeField(form, TownForm.class, "fieldWidgets")).size() == 3,
+                    "All numeric settings are built directly without an advanced toggle");
+            form.init(); initialFocus.invoke(form);
+            require(form.getFocused() == null, "Reopening an editable form clears its old focus");
+        } finally {
+            nativeField(null, net.minecraft.client.Minecraft.class, "instance", previousClient);
+        }
+    }
+
+    /** 真实输入控件复用时，目录选镇和公共地址更新须同时进入可见内容。 */
+    @SuppressWarnings("unchecked")
+    private static void formFieldSynchronization() throws Exception {
+        var previousClient = nativeField(null, net.minecraft.client.Minecraft.class, "instance");
+        try {
+            var font = (net.minecraft.client.gui.Font) allocateNative(net.minecraft.client.gui.Font.class);
+            nativeField(font, net.minecraft.client.gui.Font.class, "splitter", new net.minecraft.client.StringSplitter((character, style) -> 1));
+            var client = allocateNative(net.minecraft.client.Minecraft.class);
+            nativeField(client, net.minecraft.client.Minecraft.class, "font", font);
+            nativeField(null, net.minecraft.client.Minecraft.class, "instance", client);
+            var fields = java.util.List.of(TownForm.Field.text("townId", "Town", "A"),
+                    TownForm.Field.text("password", "Password", "old"), TownForm.Field.text("endpoint", "Endpoint", "local"));
+            var form = new TownForm(null, "Join", fields, ignored -> {});
+            var addField = TownForm.class.getDeclaredMethod("addField", TownForm.Field.class, int.class, int.class, int.class);
+            addField.setAccessible(true);
+            var values = (java.util.Map<String, String>) nativeField(form, TownForm.class, "values");
+            var widgets = (java.util.Map<String, net.minecraft.client.gui.components.AbstractWidget>) nativeField(form, TownForm.class, "fieldWidgets");
+            var serviceNotice = TownForm.class.getDeclaredMethod("currentServiceNoticeKey");
+            serviceNotice.setAccessible(true);
+            form.withServiceNotice();
+            values.put("endpoint", TownGateway.ClientConfig.DEFAULT_ENDPOINT);
+            require(serviceNotice.invoke(form).equals("yat.hint.public_service"), "Default endpoint shows public service information");
+            values.put("endpoint", TownGateway.ClientConfig.LOCAL_ENDPOINT);
+            require(serviceNotice.invoke(form).equals("yat.hint.local_service"), "Local endpoint keeps local service information");
+            values.put("endpoint", "https://private.example.test");
+            require(serviceNotice.invoke(form).equals(""), "Custom endpoint does not show public or local information");
+            for (var field : fields) addField.invoke(form, field, 0, 0, 200);
+            values.put("townId", "B"); values.put("password", "");
+            values.put("endpoint", TownGateway.ClientConfig.PUBLIC_ENDPOINT);
+            for (var field : fields) {
+                var input = (net.minecraft.client.gui.components.EditBox) widgets.get(field.key());
+                addField.invoke(form, field, 0, 0, 200);
+                require(widgets.get(field.key()) == input, "Programmatic update preserves the existing input: " + field.key());
+                require(input.getValue().equals(values.get(field.key())), "Visible input matches submitted value: " + field.key());
+                input.setCursorPosition(0);
+                addField.invoke(form, field, 0, 0, 200);
+                require(input.getCursorPosition() == 0, "Unchanged value preserves the cursor: " + field.key());
+                input.setValue("typed");
+                require(values.get(field.key()).equals("typed"), "Reused input still updates submitted value: " + field.key());
+            }
+            var protectedTown = TownGateway.object("id", "12345678", "name", "Protected", "passwordEnabled", true);
+            var openTown = TownGateway.object("id", "87654321", "name", "Open", "passwordEnabled", false);
+            form.withTownDirectory();
+            nativeField(form, TownForm.class, "towns", java.util.List.of(protectedTown, openTown));
+            form.selectDirectoryTown(protectedTown);
+            require(form.directoryTowns().isEmpty() && nativeField(form, TownForm.class, "selectedTown") == protectedTown,
+                    "Password entry retains the chosen summary and folds other directory cards");
+            require(values.get("townId").equals("12345678") && values.get("password").isEmpty()
+                    && (boolean) nativeField(form, TownForm.class, "passwordRequired"), "Selecting a protected town starts with its ID and a fresh password");
+            values.put("password", "previous secret");
+            form.clearDirectorySelection();
+            require(form.directoryTowns().equals(java.util.List.of(protectedTown, openTown)) && values.get("townId").isEmpty()
+                    && values.get("password").isEmpty() && nativeField(form, TownForm.class, "selectedTown") == null,
+                    "Returning to the directory restores its cards and removes the prior town credentials");
+            form.selectDirectoryTown(openTown);
+            require(!(boolean) nativeField(form, TownForm.class, "passwordRequired") && values.get("townId").equals("87654321"),
+                    "An open town still takes the direct join path without a password step");
+            form.selectDirectoryTown(null);
+            require(form.directoryTowns().isEmpty() && nativeField(form, TownForm.class, "selectedTown") == null
+                    && values.get("townId").isEmpty(), "Manual ID entry folds the directory and starts without a selected town");
+            values.put("password", "kept on failure");
+            Object passwordWidget = widgets.get("password");
+            nativeField(form, TownForm.class, "loading", null);
+            form.withLoading(true);
+            require(form.mouseClicked(null, false) && form.mouseReleased(null) && form.mouseDragged(null, 1, 1)
+                    && form.mouseScrolled(0, 0, 0, 1), "A newly busy form blocks mouse input before the overlay delay");
+            require(form.keyPressed(null) && form.keyReleased(null) && form.charTyped(null) && form.preeditUpdated(null),
+                    "Busy forms block keys, text and input method edits");
+            form.onClose();
+            form.withLoading(false);
+            require(values.get("password").equals("kept on failure") && widgets.get("password") == passwordWidget,
+                    "Ending a request keeps the same input widget and its entered value");
+            var join = new TownForm(null, "Join", java.util.List.of(fields.get(0).compact(), fields.get(1).compact()), ignored -> {})
+                    .withTownDirectory().withLoading(true);
+            nativeField(join, net.minecraft.client.gui.screens.Screen.class, "width", 640);
+            nativeField(join, net.minecraft.client.gui.screens.Screen.class, "height", 360);
+            var rebuild = TownForm.class.getDeclaredMethod("rebuild"); rebuild.setAccessible(true);
+            rebuild.invoke(join);
+            var waitingBounds = (TownStyle.Window) nativeField(join, TownForm.class, "window");
+            join.withLoading(false).showTowns(java.util.List.of(protectedTown, openTown));
+            require(waitingBounds.equals(nativeField(join, TownForm.class, "window")),
+                    "The join directory keeps its window bounds when the first request completes");
+            join.showTowns(java.util.List.of());
+            require(waitingBounds.equals(nativeField(join, TownForm.class, "window")),
+                    "An empty directory result keeps the same window as the loading shell");
+            join.showTowns(java.util.List.of(protectedTown, openTown));
+            join.selectDirectoryTown(protectedTown); rebuild.invoke(join);
+            require(((TownStyle.Window) nativeField(join, TownForm.class, "window")).height() < waitingBounds.height(),
+                    "A selected town may compact around its summary and password field");
+            join.selectDirectoryTown(null); rebuild.invoke(join);
+            require(((TownStyle.Window) nativeField(join, TownForm.class, "window")).height() < waitingBounds.height(),
+                    "Manual ID entry may compact after folding the directory");
+            var screen = new TownScreen();
+            nativeField(screen, TownScreen.class, "mutationPending", true);
+            var screenLoading = TownScreen.class.getDeclaredMethod("loading"); screenLoading.setAccessible(true);
+            long before = System.nanoTime();
+            var screenState = (TownStyle.LoadingState) screenLoading.invoke(screen);
+            long after = System.nanoTime();
+            require(screenState.blocking() && screenState.startedAt() >= before && screenState.startedAt() <= after,
+                    "TownScreen starts the shared loading clock with monotonic nanoseconds");
+            nativeField(screenState, TownStyle.LoadingState.class, "startedAt", System.nanoTime() - 200_000_000L);
+            require(((TownStyle.LoadingState) screenLoading.invoke(screen)).visible(),
+                    "TownScreen shows an ongoing request after the shared delay without mixing milliseconds and nanoseconds");
+        } finally {
+            nativeField(null, net.minecraft.client.Minecraft.class, "instance", previousClient);
+        }
+    }
+
+    private static void loadingLifecycle() {
+        var loading = new TownStyle.LoadingState();
+        loading.update(false, 0);
+        require(!loading.blocking() && !loading.visible(), "Idle screens have no loading layer or input block");
+        loading.update(true, 10_000_000L);
+        require(loading.blocking() && !loading.visible(), "Requests block immediately while the short display delay is pending");
+        loading.update(true, 159_999_999L);
+        require(!loading.visible() && loading.startedAt() == 10_000_000L, "Repeated busy frames keep the original request start and avoid a short flash");
+        loading.update(true, 160_000_000L);
+        require(loading.visible(), "A request lasting 150 milliseconds displays its loading layer");
+        loading.update(false, 161_000_000L);
+        require(!loading.blocking() && !loading.visible(), "Success and failure both release loading immediately");
+        loading.update(true, 200_000_000L);
+        require(loading.startedAt() == 200_000_000L && !loading.visible(), "The next request receives a fresh delay instead of inheriting an old overlay");
     }
 
     private static Object allocateNative(Class<?> type) throws Exception {

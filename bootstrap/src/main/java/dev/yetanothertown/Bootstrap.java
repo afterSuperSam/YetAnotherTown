@@ -5,6 +5,7 @@ import net.fabricmc.loader.api.FabricLoader;
 
 /** 按运行中的游戏版本选择独立适配层。 */
 public final class Bootstrap implements ClientModInitializer {
+    private static final java.util.Map<String, java.lang.reflect.Method> MAP_HOOKS = new java.util.concurrent.ConcurrentHashMap<>();
     @Override
     public void onInitializeClient() {
         try {
@@ -29,9 +30,14 @@ public final class Bootstrap implements ClientModInitializer {
     /** 原生地图注入只转发到当前版本，避免加载其他版本的游戏类型。 */
     public static void mapHook(String method, Object... arguments) {
         try {
-            Class<?>[] parameters = new Class<?>[arguments.length];
-            java.util.Arrays.fill(parameters, Object.class);
-            Class.forName("dev.yetanothertown." + adapter() + ".XaeroBridge").getMethod(method, parameters).invoke(null, arguments);
+            java.lang.reflect.Method hook = MAP_HOOKS.get(method);
+            if (hook == null) {
+                Class<?>[] parameters = new Class<?>[arguments.length];
+                java.util.Arrays.fill(parameters, Object.class);
+                hook = Class.forName("dev.yetanothertown." + adapter() + ".XaeroBridge").getMethod(method, parameters);
+                MAP_HOOKS.put(method, hook);
+            }
+            hook.invoke(null, arguments);
         } catch (ReflectiveOperationException exception) {
             throw new IllegalStateException("Incompatible Xaero map extension API: " + method, exception);
         }

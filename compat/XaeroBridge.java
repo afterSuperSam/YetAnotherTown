@@ -12,7 +12,6 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 import xaero.map.MapProcessor;
@@ -38,21 +37,48 @@ import static dev.yetanothertown.client.TownScreen.*;
 public final class XaeroBridge {
     public static void renderMapTooltip(Object screen, Object graphics, Object mouseX, Object mouseY) {
         ProjectHighlighter.renderTooltip((GuiMap) screen, (net.minecraft.client.gui.GuiGraphicsExtractor) graphics, (Integer) mouseX, (Integer) mouseY);
+        GuiMap map = (GuiMap) screen;
+        TownGateway gateway = TownGateway.get();
+        if (mapHintUnavailable || mapUiHidden() || !gateway.loggedIn() || gateway.hasCompletedHint("map_selection") || map.width < 200 || map.height < 140) return;
+        try {
+            if (mapHintMenuField == null) {
+                mapHintMenuField = mapField("rightClickMenu");
+                mapHintWaypointsField = mapField("overWaypointsMenu");
+                mapHintPlayersField = mapField("overPlayersMenu");
+            }
+            if (mapHintMenuField.get(map) != null || mapHintWaypointsField.getBoolean(map) || mapHintPlayersField.getBoolean(map)) return;
+            for (var child : map.children()) if (child instanceof net.minecraft.client.gui.components.AbstractWidget widget && widget.visible && widget.isMouseOver((Integer) mouseX, (Integer) mouseY)) return;
+        } catch (ReflectiveOperationException | RuntimeException exception) {
+            mapHintUnavailable = true;
+            LOGGER.log(System.Logger.Level.WARNING, "Xaero map hint interface unavailable; disabling first-use map hint", exception);
+            return;
+        }
+        String reason = creationBlockReason();
+        String hint = reason.isEmpty() ? TownText.text("yat.hint.map_selection_once") : reason;
+        var renderer = (GuiGraphicsExtractor) graphics;
+        var font = Minecraft.getInstance().font;
+        String line = font.plainSubstrByWidth(hint, Math.max(0, map.width - 40));
+        renderer.text(font, line, (map.width - font.width(line)) / 2, map.height - 36, 0xFFD6A45D, true);
     }
     private static final System.Logger LOGGER = System.getLogger("Yet Another Town");
     private static Waypoint navigationWaypoint;
     private static WaypointSet navigationSet;
     private static Field selectionField;
+    private static Field mapHintMenuField, mapHintWaypointsField, mapHintPlayersField;
+    private static Field mapHiddenUiField;
+    private static boolean mapHiddenUiChecked;
     private static Field rightClickDimensionField;
     private static boolean menuUnavailable;
+    private static boolean mapHintUnavailable;
     private static BoundMap suspendedMap;
     private XaeroBridge() { }
 
     public static void initialize() {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            Screen screen = VersionClient.currentScreen();
+            if (screen instanceof BoundMap active && !active.sameSelection()) active.finishViewing();
             BoundMap suspended = suspendedMap;
             if (suspended != null) {
-                Screen screen = VersionClient.currentScreen();
                 if (screen == suspended) {
                     suspended.suspendedForForm = false;
                     suspendedMap = null;
@@ -164,52 +190,87 @@ public final class XaeroBridge {
                 rightClickDimensionField = mapField("rightClickDim");
             }
             TownGateway gateway = TownGateway.get();
-            if (VersionClient.navigation() != null) options.add(option(map, options.size(), TownText.text("yat.map.stop_navigation"), VersionClient::stopNavigation));
+            MapTileSelection selection = (MapTileSelection) selectionField.get(map);
+            ResourceKey<Level> dimension = (ResourceKey<Level>) rightClickDimensionField.get(map);
+            JsonObject chunks = selection == null || dimension == null ? null : selectionChunks(selection, dimension.identifier().toString());
+            boolean matching = chunks != null && map.getMapProcessor() == processor() && matchingMap(dimension);
+            if (matching && creationBlockReason().isEmpty() && (selection.getLeft() != selection.getRight() || selection.getTop() != selection.getBottom())) {
+                try { gateway.completeHint("map_selection"); }
+                catch (IllegalStateException exception) {
+                    LOGGER.log(System.Logger.Level.WARNING, "Could not save completed map selection hint", exception);
+                    gateway.status = exception.getMessage();
+                }
+            }
+            TownGateway.Context context = gateway.context();
+            MapWorld world = matching ? map.getMapProcessor().getMapWorld() : null;
+            String mapKey = matching ? currentMapKey() : "";
+            if (matching && map instanceof BoundMap bound && bound.expandingProject != null) {
+                addExpansionOptions(bound, options, chunks, context, world, mapKey, dimension);
+                return;
+            }
             options.add(option(map, options.size(), gateway.config().projectOverlayEnabled ? TownText.text("yat.map.hide_projects") : TownText.text("yat.map.show_projects"), () -> {
                 gateway.setProjectOverlayEnabled(!gateway.config().projectOverlayEnabled);
                 ProjectHighlighter.refresh();
             }));
-            MapTileSelection selection = (MapTileSelection) selectionField.get(map);
-            ResourceKey<Level> dimension = (ResourceKey<Level>) rightClickDimensionField.get(map);
-            if (selection == null || dimension == null) return;
-            JsonObject chunks = selectionChunks(selection, dimension.identifier().toString());
-            if (map.getMapProcessor() != processor() || !matchingMap(dimension)) {
-                addAssociationOption(map, options, chunks);
+            if (chunks == null) return;
+            if (!matching) {
+                addAssociationOption(map, options);
                 return;
             }
-            TownGateway.Context context = gateway.context();
-            MapWorld world = map.getMapProcessor().getMapWorld();
-            String mapKey = currentMapKey();
             List<JsonObject> overlaps = projectsInSelection(chunks);
-            String reason = creationBlockReason();
-            if (reason.isEmpty() && !overlaps.isEmpty()) reason = TownText.text("yat.map.overlap_prefix") + overlaps.size() + TownText.text("yat.map.overlap_suffix") + conflictNames(overlaps);
-            String createLabel = reason.isEmpty() ? TownText.text("yat.map.create_in_selection") : TownText.text("yat.map.cannot_create_prefix") + reason;
-            options.add(option(map, options.size(), createLabel, () -> {
-                if (!validMenu(map, context, world, mapKey, dimension) || !creationBlockReason().isEmpty()) return;
-                gateway.setProjectOverlayEnabled(true);
-                ProjectHighlighter.refresh();
-                if (!projectsInSelection(chunks).isEmpty()) { gateway.status = TownText.text("yat.error.selection_overlap"); return; }
-                if (map instanceof BoundMap bound) bound.suspendForForm();
-                TownScreen.createProject(map, chunks.deepCopy());
-            }).setActive(reason.isEmpty()));
-            if (!isCurrentWorld() && !archived(selectedWorld())) {
-                addAssociationOption(map, options, chunks);
+            if (overlaps.isEmpty()) {
+                if (creationBlockReason().isEmpty()) options.add(option(map, options.size(), TownText.text("yat.map.create_in_selection"), () -> {
+                    if (!validMenu(map, context, world, mapKey, dimension) || !creationBlockReason().isEmpty()) return;
+                    if (!projectsInSelection(chunks).isEmpty()) throw new IllegalStateException(TownText.text("yat.error.selection_overlap"));
+                    gateway.setProjectOverlayEnabled(true);
+                    ProjectHighlighter.refresh();
+                    if (map instanceof BoundMap bound) bound.suspendForForm();
+                    TownScreen.createProject(map, chunks.deepCopy());
+                }));
+                return;
             }
-            if (!overlaps.isEmpty() && !gateway.config().projectOverlayEnabled) options.add(option(map, options.size(), TownText.text("yat.map.show_conflicts"), () -> {
-                gateway.setProjectOverlayEnabled(true);
-                ProjectHighlighter.refresh();
-            }));
-            for (JsonObject project : overlaps) {
-                String id = stringValue(project, "id");
-                options.add(option(map, options.size(), TownText.text("yat.map.view_project_prefix") + projectName(project), () -> {
+            if (overlaps.size() > 1) {
+                options.add(option(map, options.size(), TownText.text("yat.map.selection_projects", overlaps.size()), () -> {
                     if (!validMenu(map, context, world, mapKey, dimension)) return;
-                    for (JsonObject current : projectsInSelection(chunks)) if (stringValue(current, "id").equals(id)) {
-                        if (map instanceof BoundMap bound) bound.suspendForForm();
-                        TownScreen.openProject(map, current);
+                    List<TownForm.Action> actions = new ArrayList<>();
+                    for (JsonObject project : projectsInSelection(chunks)) {
+                        String id = stringValue(project, "id");
+                        actions.add(new TownForm.Action(projectName(project), () -> {
+                            if (!validMenu(map, context, world, mapKey, dimension)) return;
+                            for (JsonObject current : projectsInSelection(chunks)) if (id.equals(stringValue(current, "id"))) {
+                                TownScreen.openProject(VersionClient.currentScreen(), current);
+                                return;
+                            }
+                        }));
+                    }
+                    if (map instanceof BoundMap bound) bound.suspendForForm();
+                    VersionClient.show(new TownForm(map, TownText.text("yat.map.selection_projects", actions.size()), List.of(), List.of(), actions, null));
+                }));
+                return;
+            }
+            JsonObject project = overlaps.getFirst();
+            String id = stringValue(project, "id");
+            Minecraft client = Minecraft.getInstance();
+            if (isCurrentWorld() && client.level != null && stringValue(project, "dimension").equals(client.level.dimension().identifier().toString())) {
+                options.add(option(map, options.size(), () -> TownScreen.isNavigationTarget(project, VersionClient.navigation())
+                        ? TownText.text("yat.ui.stop_navigation") : TownText.text("yat.map.navigate_project"), () -> {
+                    if (!validMenu(map, context, world, mapKey, dimension)) return;
+                    for (JsonObject current : projectsInSelection(chunks)) if (id.equals(stringValue(current, "id"))) {
+                        if (TownScreen.isNavigationTarget(current, VersionClient.navigation())) VersionClient.stopNavigation();
+                        else if (!VersionClient.navigate(current)) throw new IllegalStateException(gateway.status);
+                        VersionClient.show(null);
                         return;
                     }
                 }));
             }
+            options.add(option(map, options.size(), TownText.text("yat.map.view_project_prefix") + projectName(project), () -> {
+                if (!validMenu(map, context, world, mapKey, dimension)) return;
+                for (JsonObject current : projectsInSelection(chunks)) if (id.equals(stringValue(current, "id"))) {
+                    if (map instanceof BoundMap bound) bound.suspendForForm();
+                    TownScreen.openProject(map, current);
+                    return;
+                }
+            }));
         } catch (ReflectiveOperationException exception) {
             menuUnavailable = true;
             LOGGER.log(System.Logger.Level.ERROR, "Unsupported Xaero native selection interface", exception);
@@ -223,8 +284,25 @@ public final class XaeroBridge {
         return field;
     }
 
+    /** 1.42 起原生地图支持隐藏界面；更早版本始终绘制地图控件。 */
+    static boolean mapUiHidden() {
+        try {
+            if (!mapHiddenUiChecked) {
+                try { mapHiddenUiField = mapField("hiddenUI"); }
+                catch (NoSuchFieldException exception) { mapHiddenUiField = null; }
+                mapHiddenUiChecked = true;
+            }
+            return mapHiddenUiField != null && mapHiddenUiField.getBoolean(null);
+        } catch (ReflectiveOperationException exception) { throw new IllegalStateException(TownText.text("yat.error.selection_api"), exception); }
+    }
+
     private static RightClickOption option(GuiMap map, int index, String label, Runnable action) {
-        return new RightClickOption(label, index, map) {
+        return option(map, index, () -> label, action);
+    }
+
+    private static RightClickOption option(GuiMap map, int index, java.util.function.Supplier<String> label, Runnable action) {
+        return new RightClickOption(label.get(), index, map) {
+            @Override protected String getName() { return label.get(); }
             @Override public void onAction(Screen screen) {
                 try { action.run(); }
                 catch (IllegalArgumentException | IllegalStateException exception) { TownForm.showError(map, exception.getMessage()); }
@@ -232,7 +310,7 @@ public final class XaeroBridge {
         };
     }
 
-    private static void addAssociationOption(GuiMap map, ArrayList<RightClickOption> options, JsonObject chunks) {
+    private static void addAssociationOption(GuiMap map, ArrayList<RightClickOption> options) {
         options.add(option(map, options.size(), TownText.text("yat.title.map_settings"), () -> {
             if (map instanceof BoundMap bound) bound.suspendForForm();
             TownScreen.openMapBinding(map);
@@ -328,6 +406,113 @@ public final class XaeroBridge {
                 + (projects.size() > 2 ? TownText.text("yat.label.and_more") : "");
     }
 
+    /** 定位沿用原生相机与底图，临时切换维度在关闭地图后恢复。 */
+    public static boolean openProjectMap(Screen parent, JsonObject project) {
+        TownGateway gateway = TownGateway.get();
+        MapProcessor processor = processor();
+        if (processor == null || !processor.isMapWorldUsable() || Minecraft.getInstance().player == null
+                || !gateway.worldId.equals(stringValue(project, "worldId"))) {
+            gateway.status = TownText.text("yat.error.wait_personal_map"); return false;
+        }
+        MapWorld world = processor.getMapWorld();
+        MapDimension dimension = world == null ? null : world.getDimensionsList().stream()
+                .filter(value -> value.getDimId().identifier().toString().equals(stringValue(project, "dimension"))).findFirst().orElse(null);
+        if (dimension == null) { gateway.status = TownText.text("yat.error.missing_season_map"); return false; }
+        String selectedMap = null;
+        if (archived(selectedWorld())) {
+            String[] identity = gateway.getBoundMapKey(stringValue(project, "dimension")).split("\\|", 2);
+            if (identity.length == 2 && identity[0].equals(world.getMainId()) && dimension.getMultiworldIdsCopy().contains(identity[1])) selectedMap = identity[1];
+        } else {
+            for (String candidate : dimension.getMultiworldIdsCopy()) {
+                if (!gateway.matchesSharedMap(VersionClient.serverAddress(), stringValue(project, "dimension"), mapName(dimension, candidate))) continue;
+                selectedMap = candidate;
+                if (candidate.equals(dimension.getCurrentMultiworld())) break;
+            }
+        }
+        if (selectedMap == null) { gateway.status = TownText.text("yat.error.missing_season_map"); return false; }
+        try { CameraFields.verify(); }
+        catch (IllegalStateException exception) { gateway.status = exception.getMessage(); return false; }
+        gateway.setProjectOverlayEnabled(true);
+        ProjectHighlighter.invalidate();
+        if (suspendedMap != null) suspendedMap.finishViewing();
+        VersionClient.show(new BoundMap(parent, processor, dimension.getDimId(), selectedMap, project));
+        return true;
+    }
+
+    public static void startProjectExpansion(Screen parent, JsonObject project) {
+        String reason = expansionBlockReason(project);
+        if (!reason.isEmpty()) throw new IllegalStateException(reason);
+        if (!openProjectMap(parent instanceof TownForm form ? form.parentScreen() : parent, project)) throw new IllegalStateException(TownGateway.get().status);
+        ((BoundMap) VersionClient.currentScreen()).expandingProject = project.deepCopy();
+    }
+
+    private static String expansionBlockReason(JsonObject project) {
+        TownGateway gateway = TownGateway.get();
+        if (archived(selectedWorld())) return TownText.text("yat.error.historic_season_read_only");
+        if (!gateway.worldId.equals(stringValue(project, "worldId")) || !isCurrentWorld()) return TownText.text("yat.error.current_map_mismatch");
+        boolean manager = contains(arrayValue(gateway.snapshot, "permissions"), "project.approve");
+        boolean owner = contains(arrayValue(gateway.snapshot, "permissions"), "project.edit")
+                && stringValue(gateway.player(), "id").equals(stringValue(project, "leaderId"));
+        return manager || owner ? "" : TownText.text("yat.error.project_permission_denied");
+    }
+
+    private static void addExpansionOptions(BoundMap map, ArrayList<RightClickOption> options, JsonObject chunks,
+                                           TownGateway.Context context, MapWorld world, String mapKey, ResourceKey<Level> dimension) {
+        JsonObject project = map.expandingProject;
+        String id = stringValue(project, "id");
+        List<JsonObject> conflicts = projectsInSelection(chunks).stream().filter(value -> !id.equals(stringValue(value, "id"))).toList();
+        String reason = expansionBlockReason(project);
+        if (reason.isEmpty() && !stringValue(project, "dimension").equals(stringValue(chunks, "dimension"))) reason = TownText.text("yat.error.project_region_scope");
+        if (reason.isEmpty() && !conflicts.isEmpty()) reason = TownText.text("yat.error.region_overlap_named", conflictNames(conflicts));
+        options.add(option(map, options.size(), reason.isEmpty() ? TownText.text("yat.map.confirm_resize", projectName(project)) : reason, () -> {
+            if (!validMenu(map, context, world, mapKey, dimension)) return;
+            String blocked = expansionBlockReason(project);
+            if (!blocked.isEmpty()) throw new IllegalStateException(blocked);
+            List<JsonObject> currentConflicts = projectsInSelection(chunks).stream().filter(value -> !id.equals(stringValue(value, "id"))).toList();
+            if (!currentConflicts.isEmpty()) throw new IllegalStateException(TownText.text("yat.error.region_overlap_named", conflictNames(currentConflicts)));
+            map.suspendForForm();
+            VersionClient.show(new TownForm(map, TownText.text("yat.ui.expand_project"), List.of(),
+                    List.of(TownText.text("yat.map.resize_summary", projectName(project), integer(chunks, "minX"), integer(chunks, "minZ"), integer(chunks, "maxX"), integer(chunks, "maxZ"))), List.of(), ignored -> {
+                JsonObject payload = TownGateway.object("townId", TownGateway.get().townId, "id", id);
+                JsonObject region = chunks.deepCopy(); region.remove("dimension"); payload.add("chunks", region);
+                Screen origin = VersionClient.currentScreen();
+                TownForm.track(TownGateway.get().request("project.update", payload).thenCompose(result -> TownGateway.get().refresh()).thenAccept(result -> Minecraft.getInstance().execute(() -> {
+                    if (!TownGateway.get().isCurrent(context) || VersionClient.currentScreen() != origin) return;
+                    map.expandingProject = null;
+                    ProjectHighlighter.invalidate(); VersionClient.show(map); ProjectHighlighter.focusProject(id);
+                })));
+            }));
+        }).setActive(reason.isEmpty()));
+        options.add(option(map, options.size(), TownText.text("yat.map.cancel_resize"), () -> map.expandingProject = null));
+    }
+
+    private static final class CameraFields {
+        private static Field x, z, reset, attached, destination, animationX, animationZ, division;
+        static void verify() {
+            if (x != null) return;
+            try {
+                Field nextX = mapField("cameraX"); z = mapField("cameraZ"); reset = mapField("shouldResetCameraPos");
+                // 1.42 之前没有跟随相机模式，原生定位只需取消位置复位。
+                try { attached = mapField("attachedCamera"); }
+                catch (NoSuchFieldException exception) { attached = null; }
+                destination = mapField("cameraDestination");
+                animationX = mapField("cameraDestinationAnimX"); animationZ = mapField("cameraDestinationAnimZ"); division = mapField("prevPlayerDimDiv"); x = nextX;
+            } catch (ReflectiveOperationException exception) { throw new IllegalStateException(TownText.text("yat.error.map_focus_incompatible"), exception); }
+        }
+    }
+
+    private static void centerMap(GuiMap map, JsonObject chunks) {
+        CameraFields.verify();
+        try {
+            CameraFields.x.setDouble(map, ((double) integer(chunks, "minX") + integer(chunks, "maxX") + 1) * 8);
+            CameraFields.z.setDouble(map, ((double) integer(chunks, "minZ") + integer(chunks, "maxZ") + 1) * 8);
+            CameraFields.reset.setBoolean(map, false);
+            if (CameraFields.attached != null) CameraFields.attached.setBoolean(null, false);
+            CameraFields.division.setDouble(map, 0);
+            CameraFields.destination.set(map, null); CameraFields.animationX.set(map, null); CameraFields.animationZ.set(map, null);
+        } catch (IllegalAccessException exception) { throw new IllegalStateException(TownText.text("yat.error.map_focus_incompatible"), exception); }
+    }
+
     public static boolean openMap(Screen returnTo) {
         TownGateway gateway = TownGateway.get();
         MapProcessor processor = processor();
@@ -394,6 +579,12 @@ public final class XaeroBridge {
         navigationWaypoint = null;
     }
 
+    static boolean navigationWaypointRemoved() {
+        if (navigationSet == null || navigationWaypoint == null) return false;
+        for (Waypoint waypoint : navigationSet.getWaypoints()) if (waypoint == navigationWaypoint) return false;
+        return true;
+    }
+
     static MapProcessor processor() {
         WorldMapSession session = WorldMapSession.getCurrentSession();
         return session == null ? null : session.getMapProcessor();
@@ -419,12 +610,22 @@ public final class XaeroBridge {
         private ResourceKey<Level> viewedDimension;
         private boolean writerPaused;
         private boolean suspendedForForm;
+        private JsonObject focusProject;
+        private JsonObject expandingProject;
+        private ResourceKey<Level> focusDimension;
+        private String focusMap;
+        private Boolean originalAttachedCamera;
 
         BoundMap(Screen returnTo, MapProcessor processor) {
             super(returnTo, returnTo, processor, Minecraft.getInstance().player);
             context = TownGateway.get().context();
             originalMapWorld = processor.getMapWorld();
             viewedDimension = originalMapWorld.getCurrentDimensionId();
+        }
+
+        BoundMap(Screen returnTo, MapProcessor processor, ResourceKey<Level> dimension, String map, JsonObject project) {
+            this(returnTo, processor);
+            viewedDimension = dimension; focusDimension = dimension; focusMap = map; focusProject = project.deepCopy();
         }
 
         @Override public void init() {
@@ -442,6 +643,10 @@ public final class XaeroBridge {
             if (suspendedMap == this) suspendedMap = null;
             if (writerPaused || !sameSelection()) return;
             originalCustomDimension = originalMapWorld.getCustomDimensionId();
+            if (focusDimension != null && CameraFields.attached != null) {
+                try { originalAttachedCamera = CameraFields.attached.getBoolean(null); }
+                catch (IllegalAccessException exception) { throw new IllegalStateException(TownText.text("yat.error.map_focus_incompatible"), exception); }
+            }
             getMapProcessor().pushWriterPause();
             writerPaused = true;
             originalMapWorld.setCustomDimensionId(viewedDimension);
@@ -476,6 +681,11 @@ public final class XaeroBridge {
                 originalMaps.clear();
             } finally {
                 if (writerPaused) { getMapProcessor().popWriterPause(); writerPaused = false; }
+                if (originalAttachedCamera != null) {
+                    try { CameraFields.attached.setBoolean(null, originalAttachedCamera); }
+                    catch (IllegalAccessException exception) { LOGGER.log(System.Logger.Level.ERROR, "Could not restore map camera mode", exception); }
+                    originalAttachedCamera = null;
+                }
                 suspendedForForm = false;
                 if (suspendedMap == this) suspendedMap = null;
             }
@@ -488,6 +698,10 @@ public final class XaeroBridge {
         private void bindViewedDimension(MapDimension dimension) {
             if (!sameSelection() || dimension == null) return;
             originalMaps.putIfAbsent(dimension, new MapState(dimension.getFutureCustomSelectedMultiworld(), dimension.futureMultiworldWritable));
+            if (dimension.getDimId().equals(focusDimension) && focusMap != null) {
+                if (!focusMap.equals(dimension.getFutureMultiworldUnsynced())) getMapProcessor().setMultiworld(dimension, focusMap);
+                return;
+            }
             String[] binding = TownGateway.get().getBoundMapKey(dimension.getDimId().identifier().toString()).split("\\|", 2);
             if (binding.length == 2 && binding[0].equals(originalMapWorld.getMainId()) && dimension.getMultiworldIdsCopy().contains(binding[1]) && !binding[1].equals(dimension.getFutureMultiworldUnsynced()))
                 getMapProcessor().setMultiworld(dimension, binding[1]);
@@ -497,6 +711,18 @@ public final class XaeroBridge {
             if (sameSelection()) bindViewedDimension(originalMapWorld.getCurrentDimension());
             ProjectHighlighter.refresh();
             super.extractRenderState(graphics, mouseX, mouseY, delta);
+            if (focusProject != null && sameSelection() && focusDimension.equals(originalMapWorld.getCurrentDimensionId())
+                    && focusMap.equals(originalMapWorld.getCurrentDimension().getCurrentMultiworld())) {
+                centerMap(this, objectValue(focusProject, "chunks"));
+                ProjectHighlighter.refresh(); ProjectHighlighter.focusProject(stringValue(focusProject, "id"));
+                focusProject = null;
+            }
+            if (expandingProject != null) {
+                String hint = font.plainSubstrByWidth(TownText.text("yat.map.resize_hint", projectName(expandingProject)), Math.max(40, width - 80));
+                int left = (width - font.width(hint)) / 2, top = height - 48;
+                graphics.fill(left - 6, top - 4, left + font.width(hint) + 6, top + font.lineHeight + 4, 0xD0202020);
+                graphics.text(font, hint, left, top, TownStyle.ACCENT, false);
+            }
         }
     }
 }

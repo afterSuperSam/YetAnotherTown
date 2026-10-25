@@ -36,12 +36,64 @@ public final class TownGatewayTest {
     public static void main(String[] arguments) throws Exception {
         useLanguage("zh_cn");
         TownGateway gateway = TownGateway.INSTANCE;
+        if (arguments.length == 1 && arguments[0].equals("loading")) {
+            loadingLifecycle(gateway);
+            System.out.println("TownGateway loading: " + checks + " checks passed (no game launched)");
+            return;
+        }
+        if (arguments.length == 1 && arguments[0].equals("onboarding")) {
+            var fresh = Files.createTempDirectory("yat-onboarding-");
+            gateway.initialize(fresh);
+            require(gateway.config().endpoint.equals(TownGateway.ClientConfig.PUBLIC_ENDPOINT), "fresh install defaults to public service");
+            gateway.initialize(fresh);
+            require(gateway.config().endpoint.equals(TownGateway.ClientConfig.PUBLIC_ENDPOINT), "public default survives reload without confirmation");
+            require(!Files.readString(fresh.resolve("yetanothertown.json")).contains("serviceSelected"), "new configuration has no service selection gate");
+            gateway.config().completedHints = null;
+            require(gateway.config().completedHints.isEmpty() && !gateway.hasCompletedHint("navigation"), "HotSwap legacy instance restores hints");
+            gateway.configure(TownGateway.ClientConfig.PUBLIC_ENDPOINT);
+            gateway.completeHint("navigation");
+            String completed = Files.readString(fresh.resolve("yetanothertown.json"));
+            gateway.completeHint("navigation");
+            require(completed.equals(Files.readString(fresh.resolve("yetanothertown.json"))), "duplicate completion leaves configuration unchanged");
+            gateway.initialize(fresh);
+            require(gateway.hasCompletedHint("navigation"), "completed hint survives reload");
+            var local = Files.createTempDirectory("yat-local-selection-");
+            gateway.initialize(local);
+            gateway.configure(TownGateway.ClientConfig.LOCAL_ENDPOINT);
+            gateway.initialize(local);
+            require(gateway.config().endpoint.equals(TownGateway.ClientConfig.LOCAL_ENDPOINT), "saved local service survives reload");
+            var legacy = Files.createTempDirectory("yat-legacy-selection-");
+            Files.writeString(legacy.resolve("yetanothertown.json"), "{\"endpoint\":\"https://legacy.example.test\"}");
+            gateway.initialize(legacy);
+            require(gateway.config().endpoint.equals("https://legacy.example.test"), "legacy custom address is retained");
+            Files.writeString(legacy.resolve("yetanothertown.json"), "{\"endpoint\":\"https://legacy.example.test\",\"serviceSelected\":false}");
+            gateway.initialize(legacy);
+            require(gateway.configurationNotice.isEmpty() && gateway.config().endpoint.equals("https://legacy.example.test"), "obsolete unconfirmed selection field cannot reset a custom endpoint");
+            Files.writeString(legacy.resolve("yetanothertown.json"), "{\"endpoint\":\"http://127.0.0.1:37841\"}");
+            gateway.initialize(legacy);
+            require(gateway.config().endpoint.equals(TownGateway.ClientConfig.LOCAL_ENDPOINT), "legacy local endpoint is retained");
+            boolean unknownHint = false;
+            try { gateway.completeHint("unknown"); } catch (IllegalArgumentException exception) { unknownHint = true; }
+            require(unknownHint && gateway.config().completedHints.isEmpty(), "unknown hint cannot mutate configuration");
+            for (String invalid : new String[]{"{\"serviceSelected\":\"yes\"}", "{\"completedHints\":true}", "{\"completedHints\":[1]}", "{\"completedHints\":[\"unknown\"]}"}) {
+                var broken = Files.createTempDirectory("yat-invalid-onboarding-");
+                Files.writeString(broken.resolve("yetanothertown.json"), invalid);
+                gateway.initialize(broken);
+                require(!gateway.configurationNotice.isEmpty() && gateway.config().endpoint.equals(TownGateway.ClientConfig.PUBLIC_ENDPOINT), "invalid onboarding configuration is rejected");
+            }
+            System.out.println("TownGateway onboarding: " + checks + " checks passed (no game launched)");
+            return;
+        }
+        boolean pollingOnly = arguments.length == 1 && arguments[0].equals("polling");
+        boolean loginRecoveryOnly = arguments.length == 1 && arguments[0].equals("login-recovery");
+        var directory = Files.createTempDirectory("yat-gateway-test-");
+        if (!pollingOnly && !loginRecoveryOnly) {
         for (String invalid : new String[]{"{\"keyBindingsVersion\":1,\"endpoint\":\"https://old.example.test\"}", "{", "null", "[]", "{\"pollIntervalSeconds\":0}", "{\"pollIntervalSeconds\":4294967306}"}) {
             var brokenDirectory = Files.createTempDirectory("yat-invalid-config-");
             var original = brokenDirectory.resolve("yetanothertown.json");
             Files.writeString(original, invalid);
             gateway.initialize(brokenDirectory);
-            require(gateway.config().endpoint.equals("http://127.0.0.1:37841"), "invalid configuration starts with fresh defaults without crashing");
+            require(gateway.config().endpoint.equals(TownGateway.ClientConfig.PUBLIC_ENDPOINT), "invalid configuration starts with fresh defaults without crashing");
             require(gateway.configurationNotice.contains("已备份"), "recovery notice remains available in client settings");
             try (var files = Files.list(brokenDirectory)) {
                 var backups = files.filter(file -> file.getFileName().toString().startsWith("yetanothertown.invalid-")).toList();
@@ -62,14 +114,38 @@ public final class TownGatewayTest {
         try { gateway.configure("https://new.example.test"); } catch (IllegalStateException exception) { protectedFile = true; }
         require(protectedFile, "saving cannot overwrite unreadable configuration");
         require(Files.readString(occupiedPath.resolve("sentinel")).equals("preserve"), "unreadable original remains untouched");
-        var directory = Files.createTempDirectory("yat-gateway-test-");
         gateway.initialize(directory);
         require(Files.exists(directory.resolve("yetanothertown.json")), "default configuration saved");
+        require(gateway.config().endpoint.equals(TownGateway.ClientConfig.PUBLIC_ENDPOINT), "new configuration uses public service by default");
+        JsonObject favorite = TownGateway.object("id", "f".repeat(24), "type", "machine", "status", "maintenance");
+        gateway.townId = "12345678";
+        require(!gateway.isFavorite(favorite), "favorites start empty");
+        gateway.toggleFavorite(favorite);
+        gateway.initialize(directory);
+        require(gateway.isFavorite(favorite), "favorites survive configuration reload");
+        require(gateway.matchesProjectFilter(favorite, "favorites", "machine"), "favorite and type filters combine");
+        require(!gateway.matchesProjectFilter(favorite, "favorites", "building"), "type filter excludes unrelated projects");
+        require(gateway.matchesProjectFilter(favorite, "maintenance", "all"), "maintenance quick filter uses project status");
+        require(!gateway.matchesProjectFilter(favorite, "mine", "all"), "signed-out player cannot match ownership");
+        gateway.townId = "87654321";
+        require(!gateway.isFavorite(favorite), "same project ID in another town is not favorited");
+        gateway.townId = "12345678";
+        String favoriteEndpoint = gateway.config().endpoint;
+        gateway.configure("https://other.example.test");
+        gateway.townId = "12345678";
+        require(!gateway.isFavorite(favorite), "favorites are isolated between service endpoints");
+        gateway.configure(favoriteEndpoint);
+        gateway.townId = "12345678";
+        require(gateway.isFavorite(favorite), "changing endpoints preserves stored favorites");
+        gateway.toggleFavorite(favorite);
+        require(!gateway.isFavorite(favorite), "favorite can be removed");
+        gateway.townId = "";
         for (String invalid : new String[]{"http://example.com", "ftp://localhost", "https://example.com/api", "http://", "https://name:secret@example.com", "https://example.com:0", "https://example.com:65536"}) {
             boolean rejected = false;
             try { gateway.configure(invalid); } catch (IllegalArgumentException exception) { rejected = true; }
             require(rejected, "unsafe or malformed endpoint rejected: " + invalid);
         }
+        } else gateway.initialize(directory);
         AtomicReference<String> authorization = new AtomicReference<>("");
         CountDownLatch slowStarted = new CountDownLatch(1);
         CountDownLatch slowRelease = new CountDownLatch(1);
@@ -83,6 +159,7 @@ public final class TownGatewayTest {
         CountDownLatch townListStarted = new CountDownLatch(1);
         CountDownLatch townListRelease = new CountDownLatch(1);
         var delayTownList = new java.util.concurrent.atomic.AtomicBoolean();
+        var failTownList = new java.util.concurrent.atomic.AtomicBoolean();
         CountDownLatch oversizedRelease = new CountDownLatch(1);
         AtomicReference<String> sharedCurrent = new AtomicReference<>("e".repeat(24));
         AtomicReference<JsonObject> sharedMetadata = new AtomicReference<>(TownGateway.object("serverAddress", "town.example", "mapName", "world", "mapNames", TownGateway.object("minecraft:the_nether", "nether"), "name", "原周目名称"));
@@ -91,6 +168,7 @@ public final class TownGatewayTest {
         CountDownLatch sharedStarted = new CountDownLatch(1);
         CountDownLatch sharedRelease = new CountDownLatch(1);
         AtomicReference<JsonObject> claimedIdentity = new AtomicReference<>();
+        AtomicReference<com.google.gson.JsonArray> customTownList = new AtomicReference<>();
         var executor = Executors.newVirtualThreadPerTaskExecutor();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.setExecutor(executor);
@@ -118,13 +196,20 @@ public final class TownGatewayTest {
                     body = "{\"ok\":true,\"data\":{}}";
                 }
                 case "town.list" -> {
+                    if (failTownList.getAndSet(false)) {
+                        exchange.sendResponseHeaders(503, -1);
+                        exchange.close();
+                        return;
+                    }
                     boolean delayed = delayTownList.getAndSet(false);
                     if (delayed) {
                         townListStarted.countDown();
                         try { townListRelease.await(5, TimeUnit.SECONDS); }
                         catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
                     }
-                    body = "{\"ok\":true,\"data\":[{\"id\":\"" + (delayed ? "outdated" : "00000001") + "\",\"name\":\"测试镇\"}]}";
+                    body = customTownList.get() == null
+                            ? "{\"ok\":true,\"data\":[{\"id\":\"" + (delayed ? "outdated" : "00000001") + "\",\"name\":\"测试镇\",\"server\":\"" + payload.get("serverAddress").getAsString() + "\"}]}"
+                            : "{\"ok\":true,\"data\":" + customTownList.get() + "}";
                 }
                 case "town.snapshot" -> {
                     String town = payload.get("townId").getAsString();
@@ -188,6 +273,44 @@ public final class TownGatewayTest {
         server.start();
         try {
             gateway.configure("http://127.0.0.1:" + server.getAddress().getPort());
+            if (loginRecoveryOnly) {
+                gateway.setGameServerAddress("recovery.example");
+                String playerId = "a".repeat(32);
+                var failedContext = gateway.context();
+                failTownList.set(true);
+                require(gateway.login(playerId, "Sam").handle((value, error) -> error != null).get(5, TimeUnit.SECONDS), "first town list HTTP 503 fails the complete login chain");
+                require(!gateway.loggedIn() && gateway.player().isEmpty() && gateway.towns.isEmpty() && gateway.townId.isEmpty() && gateway.snapshot.isEmpty(), "failed identity initialization clears private state and the loggedIn retry guard");
+                require(!gateway.isCurrent(failedContext), "failed initialization invalidates the former session context");
+                require(revoked.await(5, TimeUnit.SECONDS), "failed initialization revokes its issued HTTP session");
+                gateway.login(playerId, "Sam").get(5, TimeUnit.SECONDS);
+                require(gateway.loggedIn() && gateway.townId.equals("00000001"), "next identity attempt recovers town selection after transient HTTP failure");
+                delayTownList.set(true);
+                var staleLogin = gateway.login(playerId, "Old context");
+                require(townListStarted.await(5, TimeUnit.SECONDS), "old session has an actual town list request in flight");
+                gateway.setGameServerAddress("new-context.example");
+                gateway.login(playerId, "New context").get(5, TimeUnit.SECONDS);
+                var currentContext = gateway.context();
+                String currentStatus = gateway.status;
+                townListRelease.countDown();
+                require(staleLogin.handle((value, error) -> error != null).get(5, TimeUnit.SECONDS), "old login rejects completion after game server context changes");
+                require(gateway.loggedIn() && gateway.isCurrent(currentContext) && gateway.status.equals(currentStatus), "old login failure does not clear or overwrite the new session");
+                require(gateway.player().get("name").getAsString().equals("New context") && gateway.townId.equals("00000001") && gateway.towns.get(0).getAsJsonObject().get("server").getAsString().equals("new-context.example"), "delayed old town list cannot contaminate the new player or town cache");
+                System.out.println("TownGateway login-recovery: " + checks + " checks passed (no game launched)");
+                return;
+            }
+            if (pollingOnly) {
+                pollingReferences(gateway, sharedCurrent.get(), sharedMetadata, customTownList);
+                System.out.println("TownGateway polling: " + checks + " checks passed (no game launched)");
+                return;
+            }
+            for (String action : new String[]{"town.create", "town.update"}) {
+                for (String name : new String[]{"ABCDEFGHIJKLM", "一二三四五六七", "ABCD一二三四E", "😀".repeat(7)}) {
+                    var result = gateway.request(action, TownGateway.object("name", name));
+                    require(result.isCompletedExceptionally(), "overlong town names rejected before sending: " + name);
+                }
+                for (String name : new String[]{"ABCDEFGHIJKL", "一二三四五六", "ABCD一二三四", "😀".repeat(6)})
+                    gateway.request(action, TownGateway.object("name", " " + name + " ")).get(5, TimeUnit.SECONDS);
+            }
             String endpoint = gateway.config().endpoint;
             gateway.townId = "00000001";
             gateway.worldId = "a".repeat(24);
@@ -221,7 +344,7 @@ public final class TownGatewayTest {
             String playerId = "a".repeat(32);
             gateway.login(playerId, "Sam").get(5, TimeUnit.SECONDS);
             require(claimedIdentity.get().get("playerId").getAsString().equals(playerId) && claimedIdentity.get().get("name").getAsString().equals("Sam"), "current game UUID and name sent directly");
-            require(claimedIdentity.get().size() == 2, "identity exchange sends no launcher access token or external verification data");
+            require(claimedIdentity.get().size() == 3 && claimedIdentity.get().has("serverAddress"), "identity exchange includes game server but no launcher access token");
             require(gateway.loggedIn() && gateway.player().get("name").getAsString().equals("Sam"), "current game identity retained");
             require(gateway.towns.size() == 1, "array envelope populates town list");
             require("Bearer test-token".equals(authorization.get()), "subsequent requests use session token");
@@ -408,6 +531,33 @@ public final class TownGatewayTest {
             require(!gateway.loggedIn(), "logout cancels a pending login");
             require(staleLoginRevoked.await(5, TimeUnit.SECONDS), "a login token issued after cancellation is revoked remotely");
             require(!Files.readString(directory.resolve("yetanothertown.json")).contains("test-token"), "session token never persisted");
+            failTownList.set(true);
+            require(gateway.login(playerId, "Sam").handle((value, error) -> error != null).get(5, TimeUnit.SECONDS), "town list failure fails identity initialization");
+            require(!gateway.loggedIn() && gateway.townId.isEmpty() && gateway.towns.isEmpty() && gateway.player().isEmpty(), "incomplete login clears session so automatic identity retry remains possible");
+            gateway.login(playerId, "Sam").get(5, TimeUnit.SECONDS);
+            require(gateway.loggedIn() && gateway.townId.equals("00000001"), "identity retry recovers selected town after transient town list failure");
+            customTownList.set(JsonParser.parseString("[{\"id\":\"11111111\",\"server\":\"a.example\"},{\"id\":\"22222222\",\"server\":\"a.example:25565\"},{\"id\":\"33333333\",\"server\":\"b.example\"}]").getAsJsonArray());
+            gateway.setGameServerAddress(" A.EXAMPLE:25565 ");
+            gateway.login(playerId, "Sam").get(5, TimeUnit.SECONDS);
+            require(claimedIdentity.get().get("serverAddress").getAsString().equals("a.example"), "login scopes the session to normalized game server");
+            require(gateway.towns.size() == 2 && gateway.townId.equals("11111111"), "automatic selection uses only matching server towns");
+            gateway.selectTown("22222222");
+            gateway.refresh().get(5, TimeUnit.SECONDS);
+            var serverContext = gateway.context();
+            require(!gateway.setGameServerAddress("a.example:25565") && gateway.isCurrent(serverContext), "same-server normalization keeps active session and selected world");
+            gateway.setGameServerAddress("b.example");
+            require(!gateway.isCurrent(serverContext) && !gateway.loggedIn() && gateway.towns.isEmpty() && gateway.snapshot.isEmpty() && gateway.townId.isEmpty(), "switching servers immediately clears previous town data and invalidates requests");
+            gateway.login(playerId, "Sam").get(5, TimeUnit.SECONDS);
+            require(gateway.towns.size() == 1 && gateway.townId.equals("33333333"), "another server chooses its own town");
+            gateway.initialize(directory);
+            gateway.setGameServerAddress("a.example");
+            gateway.login(playerId, "Sam").get(5, TimeUnit.SECONDS);
+            require(gateway.townId.equals("22222222"), "last selected town survives configuration reload per game server");
+            gateway.setGameServerAddress("empty.example");
+            gateway.login(playerId, "Sam").get(5, TimeUnit.SECONDS);
+            require(gateway.towns.isEmpty() && gateway.townId.isEmpty() && gateway.snapshot.isEmpty(), "new server does not fall back to another server town");
+            require(TownGateway.normalizeServerAddress("[::1]:25565").equals("[::1]") && TownGateway.normalizeServerAddress("a.example:25566").equals("a.example:25566"), "default port normalization preserves nondefault ports and bracketed IPv6");
+            pollingReferences(gateway, sharedCurrent.get(), sharedMetadata, customTownList);
         } finally {
             slowRelease.countDown();
             refreshRelease.countDown();
@@ -418,6 +568,143 @@ public final class TownGatewayTest {
             oversizedRelease.countDown();
             executor.close();
         }
+        loadingLifecycle(gateway);
         System.out.println("TownGateway: " + checks + " checks passed (no game launched)");
+    }
+
+    private static void loadingLifecycle(TownGateway gateway) throws Exception {
+        var pending = new java.util.concurrent.LinkedBlockingQueue<com.sun.net.httpserver.HttpExchange>();
+        var executor = Executors.newVirtualThreadPerTaskExecutor();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.setExecutor(executor);
+        server.createContext("/api", pending::add);
+        server.start();
+        try {
+            gateway.initialize(Files.createTempDirectory("yat-loading-"));
+            gateway.configure("http://127.0.0.1:" + server.getAddress().getPort());
+            gateway.setGameServerAddress("loading.example");
+            var login = gateway.login("a".repeat(32), "Sam");
+            require(gateway.isLoading(), "login immediately hides the incomplete identity page");
+            reply(pending, "auth.login", TownGateway.object("token", "loading-token", "player", TownGateway.object("name", "Sam")), 200);
+            var townList = receive(pending, "town.list");
+            require(gateway.loggedIn() && gateway.isLoading(), "issued token does not reveal the page while the first town list is pending");
+            reply(townList, JsonParser.parseString("[{\"id\":\"00000001\",\"server\":\"loading.example\"}]"), 200);
+            var firstSnapshot = receive(pending, "town.snapshot");
+            login.get(5, TimeUnit.SECONDS);
+            require(gateway.isLoading(), "completed login retains loading while its selected town snapshot is pending");
+            var content = TownGateway.object("town", TownGateway.object("id", "00000001", "currentWorldId", "e".repeat(24)), "worlds", new com.google.gson.JsonArray(), "projects", new com.google.gson.JsonArray());
+            reply(firstSnapshot, content, 200);
+            var selectedSnapshot = receive(pending, "town.snapshot");
+            require(gateway.worldId.equals("e".repeat(24)) && gateway.isLoading(), "automatic world selection keeps loading continuously through the second snapshot");
+            reply(selectedSnapshot, content, 200);
+            await(() -> !gateway.isLoading());
+            require(gateway.snapshot.equals(content), "only the complete initial snapshot ends loading");
+            JsonObject reference = gateway.snapshot;
+            var poll = gateway.refresh();
+            require(!gateway.isLoading(), "background polling with a complete snapshot does not hide content");
+            reply(pending, "town.snapshot", content, 200);
+            poll.get(5, TimeUnit.SECONDS);
+            require(gateway.snapshot == reference, "unchanged background polling keeps the published snapshot reference");
+
+            gateway.selectWorld("f".repeat(24));
+            var superseded = receive(pending, "town.snapshot");
+            var oldRefresh = gateway.refresh();
+            var oldResponse = receive(pending, "town.snapshot");
+            gateway.selectWorld("b".repeat(24));
+            var currentResponse = receive(pending, "town.snapshot");
+            reply(oldResponse, content, 200);
+            oldRefresh.get(5, TimeUnit.SECONDS);
+            reply(superseded, content, 200);
+            require(gateway.isLoading(), "superseded snapshot completion cannot end the newer selection loading");
+            reply(currentResponse, TownGateway.object(), 503);
+            await(() -> !gateway.isLoading());
+            require(gateway.loggedIn(), "failed initial snapshot stops loading and preserves the session for polling retry");
+
+            gateway.selectTown("00000002");
+            var cancelledSnapshot = receive(pending, "town.snapshot");
+            require(gateway.isLoading(), "new town selection begins loading immediately");
+            gateway.logout();
+            require(!gateway.isLoading(), "logout clears loading before pending requests finish");
+            reply(cancelledSnapshot, content, 200);
+            reply(pending, "auth.logout", TownGateway.object(), 200);
+            var failedLogin = gateway.login("a".repeat(32), "Retry");
+            reply(pending, "auth.login", TownGateway.object("token", "retry-token", "player", TownGateway.object()), 200);
+            reply(pending, "town.list", TownGateway.object(), 503);
+            require(failedLogin.handle((value, error) -> error != null).get(5, TimeUnit.SECONDS) && !gateway.isLoading() && !gateway.loggedIn(), "failed town initialization stops loading and leaves identity retry possible");
+            reply(pending, "auth.logout", TownGateway.object(), 200);
+
+            var oldLogin = gateway.login("a".repeat(32), "Old");
+            var oldIdentity = receive(pending, "auth.login");
+            gateway.setGameServerAddress("new-loading.example");
+            require(!gateway.isLoading(), "server change immediately clears the cancelled loading state");
+            var newLogin = gateway.login("a".repeat(32), "New");
+            var newIdentity = receive(pending, "auth.login");
+            reply(oldIdentity, TownGateway.object("token", "old-token", "player", TownGateway.object()), 200);
+            require(oldLogin.handle((value, error) -> error != null).get(5, TimeUnit.SECONDS) && gateway.isLoading(), "old identity completion cannot clear a new login spinner");
+            reply(pending, "auth.logout", TownGateway.object(), 200);
+            reply(newIdentity, TownGateway.object("token", "new-token", "player", TownGateway.object()), 200);
+            reply(pending, "town.list", new com.google.gson.JsonArray(), 200);
+            newLogin.get(5, TimeUnit.SECONDS);
+            require(!gateway.isLoading() && gateway.loggedIn() && gateway.townId.isEmpty(), "successful login with no towns ends loading at the usable empty state");
+        } finally {
+            server.stop(0);
+            executor.close();
+        }
+    }
+
+    private static com.sun.net.httpserver.HttpExchange receive(java.util.concurrent.BlockingQueue<com.sun.net.httpserver.HttpExchange> pending, String action) throws Exception {
+        var exchange = pending.poll(5, TimeUnit.SECONDS);
+        require(exchange != null, "HTTP request reaches the controlled " + action + " boundary");
+        JsonObject request = JsonParser.parseString(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)).getAsJsonObject();
+        require(request.get("action").getAsString().equals(action), "controlled HTTP request is " + action);
+        return exchange;
+    }
+
+    private static void reply(java.util.concurrent.BlockingQueue<com.sun.net.httpserver.HttpExchange> pending, String action, com.google.gson.JsonElement data, int status) throws Exception {
+        reply(receive(pending, action), data, status);
+    }
+
+    private static void reply(com.sun.net.httpserver.HttpExchange exchange, com.google.gson.JsonElement data, int status) throws Exception {
+        byte[] body = TownGateway.object("ok", true, "data", data).toString().getBytes(StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders(status, body.length);
+        exchange.getResponseBody().write(body);
+        exchange.close();
+    }
+
+    private static void await(java.util.function.BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!condition.getAsBoolean() && System.nanoTime() < deadline) Thread.sleep(5);
+        require(condition.getAsBoolean(), "asynchronous loading settles within the controlled response deadline");
+    }
+
+    private static void pollingReferences(TownGateway gateway, String worldId, AtomicReference<JsonObject> metadata,
+                                          AtomicReference<com.google.gson.JsonArray> townList) throws Exception {
+        gateway.setGameServerAddress("polling.example");
+        gateway.townId = "shared";
+        gateway.worldId = worldId;
+        gateway.refresh().get(5, TimeUnit.SECONDS);
+        var snapshot = gateway.snapshot;
+        var context = gateway.context();
+        gateway.refresh().get(5, TimeUnit.SECONDS);
+        require(gateway.snapshot == snapshot && gateway.isCurrent(context), "unchanged snapshot polling preserves the published reference and operation context");
+        JsonObject changedMetadata = metadata.get().deepCopy();
+        changedMetadata.addProperty("name", "轮询更新周目");
+        metadata.set(changedMetadata);
+        gateway.refresh().get(5, TimeUnit.SECONDS);
+        require(gateway.snapshot != snapshot && gateway.snapshot.getAsJsonArray("worlds").get(0).getAsJsonObject().get("name").getAsString().equals("轮询更新周目"), "changed snapshot polling publishes fresh content");
+        snapshot = gateway.snapshot;
+        gateway.refresh().get(5, TimeUnit.SECONDS);
+        require(gateway.snapshot == snapshot, "polling after a snapshot change retains the new reference while content stays equal");
+        townList.set(new com.google.gson.JsonArray());
+        gateway.refreshTowns().get(5, TimeUnit.SECONDS);
+        var towns = gateway.towns;
+        gateway.refreshTowns().get(5, TimeUnit.SECONDS);
+        require(gateway.towns == towns, "unchanged town list polling preserves the published reference");
+        townList.get().add(TownGateway.object("id", "00000002", "name", "轮询更新小镇", "server", "polling.example"));
+        gateway.refreshTowns().get(5, TimeUnit.SECONDS);
+        require(gateway.towns != towns && gateway.towns.size() == 1, "changed town list polling publishes fresh content");
+        towns = gateway.towns;
+        gateway.refreshTowns().get(5, TimeUnit.SECONDS);
+        require(gateway.towns == towns, "polling after a town list change retains the new reference while content stays equal");
     }
 }

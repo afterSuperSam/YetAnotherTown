@@ -2,10 +2,13 @@ package dev.yetanothertown.client;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import net.minecraft.ChatFormatting;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.locale.Language;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 
 import static dev.yetanothertown.client.TownScreen.*;
@@ -34,13 +37,13 @@ public final class TownHud {
         Minecraft client = Minecraft.getInstance();
         if (client.player == null || !gateway.loggedIn() || !XaeroBridge.isCurrentWorld()) {
             currentProject = null; previousSnapshot = null; previousContext = null;
-            entry.reset(); if (entrySubtitle) subtitleUntil = 0;
+            entry.reset(); subtitleUntil = 0;
             return;
         }
         TownGateway.Context context = gateway.context();
         JsonObject snapshot = gateway.snapshot;
         String dimension = VersionClient.dimension();
-        if (!context.equals(previousContext) || !dimension.equals(previousDimension)) { entry.reset(); if (entrySubtitle) subtitleUntil = 0; previousSnapshot = null; }
+        if (!context.equals(previousContext) || !dimension.equals(previousDimension)) { entry.reset(); subtitleUntil = 0; previousSnapshot = null; }
         int chunkX = client.player.getBlockX() >> 4, chunkZ = client.player.getBlockZ() >> 4;
         if (previousSnapshot != snapshot || chunkX != previousChunkX || chunkZ != previousChunkZ) {
             currentProject = projectAt(snapshot, gateway.worldId, dimension, chunkX, chunkZ);
@@ -90,7 +93,8 @@ public final class TownHud {
 
     static void openProject() {
         tick();
-        if (currentProject != null) TownScreen.openProject(VersionClient.currentScreen(), currentProject);
+        JsonObject project = projectForDetails(TownGateway.get().snapshot, VersionClient.navigation(), currentProject);
+        if (project != null) TownScreen.openProject(VersionClient.currentScreen(), project);
         else {
             TownGateway.get().status = TownText.text("yat.hint.no_project_here");
             entrySubtitle = false;
@@ -99,39 +103,87 @@ public final class TownHud {
         }
     }
 
+    static JsonObject projectForDetails(JsonObject snapshot, JsonObject target, JsonObject nearby) {
+        if (target == null || !target.has("chunks")) return nearby;
+        for (JsonElement element : arrayValue(snapshot, "projects")) {
+            JsonObject project = element.getAsJsonObject();
+            if (TownScreen.isNavigationTarget(project, target)) return project;
+        }
+        return null;
+    }
+
+    static String entryStatus(String status) {
+        return switch (status) {
+            case "planned" -> TownText.text("yat.project.status.planned");
+            case "active" -> TownText.text("yat.hud.project_unfinished");
+            case "maintenance" -> TownText.text("yat.project.status.needs_repair");
+            case "completed" -> TownText.text("yat.project.status.completed");
+            default -> "";
+        };
+    }
+
+    /** 状态优先保留，长项目名称用省略号收紧。 */
+    static Component entryLine(String title, String status, int width, java.util.function.ToIntFunction<String> measure) {
+        String label = entryStatus(status);
+        if (label.isEmpty()) return Component.literal(TownStyle.fitText(title, width, measure));
+        String visibleStatus = TownStyle.fitText(label, width, measure);
+        String name = TownStyle.fitText(title, Math.max(0, width - measure.applyAsInt(" · " + visibleStatus)), measure);
+        var text = Component.literal(name);
+        if (!name.isEmpty()) text.append(Component.literal(" · "));
+        return text.append(Component.literal(visibleStatus).withStyle(switch (status) {
+            case "maintenance" -> ChatFormatting.RED;
+            case "planned" -> ChatFormatting.GOLD;
+            case "active" -> ChatFormatting.YELLOW;
+            case "completed" -> ChatFormatting.GREEN;
+            default -> ChatFormatting.WHITE;
+        }));
+    }
+
+    /** 进入提示与导航共用原来的居中小字位置；进入提示优先，不绘制面板。 */
     private static void draw(GuiGraphicsExtractor graphics) {
         Minecraft client = Minecraft.getInstance();
         if (client.player == null || VersionClient.hudHidden() || VersionClient.currentScreen() != null) return;
+        int y = Math.min(graphics.guiHeight() - 70, graphics.guiHeight() / 2 + 30);
         long remaining = subtitleUntil - System.nanoTime();
         if (remaining > 0) {
             int alpha = TownGateway.get().config().animationEnabled ? (int) Math.min(255, remaining / 2_000_000L) : 255;
             if (alpha > 3) {
-                int y = Math.min(graphics.guiHeight() - 70, graphics.guiHeight() / 2 + 30);
-                String title = client.font.plainSubstrByWidth(subtitle, Math.max(0, graphics.guiWidth() - 32));
-                graphics.text(client.font, title, (graphics.guiWidth() - client.font.width(title)) / 2, y, alpha << 24 | 0xFFFFFF, true);
+                if (entrySubtitle && currentProject != null) {
+                    String status = stringValue(currentProject, "status");
+                    var text = entryLine(subtitle, status, Math.max(0, graphics.guiWidth() - 32), client.font::width);
+                    drawCentered(graphics, text, y, alpha << 24 | 0xFFFFFF);
+                } else drawCentered(graphics, subtitle, y, alpha << 24 | 0xFFFFFF);
                 if (entrySubtitle && currentProject != null) {
                     String key = VersionClient.projectKeyLabel();
                     String hint = key.isEmpty() ? TownText.text("yat.hint.bind_project_details") : TownText.text("yat.hint.project_key", key);
-                    hint = client.font.plainSubstrByWidth(hint, Math.max(0, graphics.guiWidth() - 32));
-                    graphics.text(client.font, hint, (graphics.guiWidth() - client.font.width(hint)) / 2, y + 15, alpha << 24 | 0xD6A45D, true);
+                    drawCentered(graphics, hint, y + 15, alpha << 24 | 0xD6A45D);
                 }
             }
+            return;
         }
         JsonObject target = VersionClient.navigation();
         if (target == null) return;
-        String name = VersionClient.navigationName(target);
-        String instruction;
-        if (!stringValue(target, "dimension").equals(VersionClient.dimension())) instruction = TownText.text("yat.hud.target_dimension") + stringValue(target, "dimension");
-        else {
-            double dx = integer(target, "x") - client.player.getX(), dz = integer(target, "z") - client.player.getZ();
-            double degrees = Math.toDegrees(Math.atan2(-dx, dz));
-            double angle = ((degrees - client.player.getYRot()) % 360 + 540) % 360 - 180;
-            String direction = Math.abs(angle) <= 20 ? TownText.text("yat.hud.ahead") : Math.abs(angle) >= 160 ? TownText.text("yat.hud.behind") : angle < 0 ? TownText.text("yat.hud.left") : TownText.text("yat.hud.right");
-            instruction = direction + " · " + Math.round(Math.hypot(dx, dz)) + "m";
+        double dx = integer(target, "x") - client.player.getX(), dz = integer(target, "z") - client.player.getZ();
+        double degrees = Math.toDegrees(Math.atan2(-dx, dz));
+        double angle = ((degrees - client.player.getYRot()) % 360 + 540) % 360 - 180;
+        String direction = Math.abs(angle) <= 20 ? TownText.text("yat.hud.ahead") : Math.abs(angle) >= 160 ? TownText.text("yat.hud.behind") : angle < 0 ? TownText.text("yat.hud.left") : TownText.text("yat.hud.right");
+        drawCentered(graphics, VersionClient.navigationName(target), y, 0xFFFFFFFF);
+        drawCentered(graphics, direction + " · " + Math.round(Math.hypot(dx, dz)) + "m", y + 15, 0xFFD6A45D);
+        if (!TownGateway.get().hasCompletedHint("navigation")) {
+            String key = VersionClient.projectKeyLabel();
+            drawCentered(graphics, key.isEmpty() ? TownText.text("yat.hint.navigation_unbound") : TownText.text("yat.hint.navigation_once", key), y + 30, 0xFFD6A45D);
         }
-        int width = Math.min(218, graphics.guiWidth() / 2 - 12);
-        TownStyle.panel(graphics, 10, 38, width, 44, true);
-        graphics.text(client.font, client.font.plainSubstrByWidth(name, width - 18), 19, 47, TownStyle.ACCENT, true);
-        graphics.text(client.font, client.font.plainSubstrByWidth(instruction, width - 18), 19, 63, TownStyle.TEXT, false);
+    }
+
+    private static void drawCentered(GuiGraphicsExtractor graphics, String text, int y, int color) {
+        var font = Minecraft.getInstance().font;
+        String line = font.plainSubstrByWidth(text, Math.max(0, graphics.guiWidth() - 32));
+        graphics.text(font, line, (graphics.guiWidth() - font.width(line)) / 2, y, color, true);
+    }
+
+    private static void drawCentered(GuiGraphicsExtractor graphics, Component text, int y, int color) {
+        var font = Minecraft.getInstance().font;
+        var line = Language.getInstance().getVisualOrder(font.substrByWidth(text, Math.max(0, graphics.guiWidth() - 32)));
+        graphics.text(font, line, (graphics.guiWidth() - font.width(line)) / 2, y, color, true);
     }
 }
